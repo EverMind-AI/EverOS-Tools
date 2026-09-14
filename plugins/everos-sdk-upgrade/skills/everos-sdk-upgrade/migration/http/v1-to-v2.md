@@ -285,7 +285,8 @@ deliberately, not by default.
 | `memory_type` | `memory_type` | **Values renamed — see API-007** |
 | *(implicit)* | `agent_id` | New: read an agent's own memories |
 | `top_k` | `top_k` | Default is now `-1` (engine decides); explicit values must be 1–100 |
-| `method` | `method` | `keyword` \| `vector` \| `hybrid` (default) \| `agentic` |
+| `method` | `method` | `keyword` \| `vector` \| `hybrid` (default) \| `agentic`. Not new in v2 — v1 offered the same four. |
+| *(new)* | `min_score` | Honoured on the episode hybrid path only. `agentic` ignores it silently, so the pair is a no-op rather than an error. |
 
 ### Constraints:
 - **Exactly one of `user_id` / `agent_id` is required** on both `get` and `search`.

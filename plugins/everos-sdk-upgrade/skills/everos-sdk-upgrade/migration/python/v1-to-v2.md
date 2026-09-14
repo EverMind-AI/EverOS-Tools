@@ -358,7 +358,12 @@ filters=None, app_id=None, project_id=None)`
 | `top_k=` | `top_k=` | Default `-1` (engine decides); explicit values 1–100 |
 | `memory_types=[...]` | *(none)* | **REMOVED.** A search can no longer be restricted to a subset of memory types. The response still separates them into `episodes` / `profiles` / `agent_cases` / `agent_skills`, so the filtering moves to the caller. |
 | `include_original_data=` | *(none)* | **REMOVED**, along with the `original_data` field it populated |
-| *(new)* | `agent_id=`, `include_profile=`, `min_score=`, `radius=`, `enable_llm_rerank=` | |
+| *(new)* | `agent_id=`, `include_profile=`, `min_score=`, `radius=`, `enable_llm_rerank=` | See the caveat on `min_score` below |
+
+> **`min_score` is honoured on the episode hybrid path only.** `method="agentic"` ignores it
+> silently, so passing the two together is a no-op rather than an error. If you are adopting
+> `min_score` as part of this migration, filter the returned `score` values yourself on the
+> agentic path.
 
 > `memory_types=[...]` is where an `agent_memory` or `raw_message` value actually lives on
 > 0.4.x, not on `get` (SDK-009). `agent_memory` becomes a choice between `agent_case` and
