@@ -10,6 +10,24 @@ signatures onto the wire changes described here; when the two disagree, this fil
 
 Apply rules in the order listed.
 
+## If your client is typed (TypeScript, Go, Java, Rust...)
+
+Read this first. Every table below reads like a call-site diff; for a typed client it is a
+**type-definition diff first**, and the call sites follow.
+
+- **The request/response type layer is the first edit, not the last.** Nothing compiles
+  until it is right, and a half-edited type layer takes down packages that never touched
+  EverOS.
+- **A flagged call site must still compile.** Where a rule says "flag, do not rewrite", the
+  flagged code still references v1 types you are renaming. Re-declare those shapes local to
+  the flagged module, prefixed `Legacy`, rather than leaving a dangling reference. Python's
+  "move the import into the function body" has no equivalent here.
+- **Do not bump a shared version constant.** See API-001.
+- **There is no `data` unwrap on the wire.** The Python facade returns `.data`
+  pre-unwrapped; that is an SDK convenience (SDK-011) and does not apply to you. On the
+  wire `data` stays exactly where it is — only `request_id` moves up. Applying the SDK rule
+  here breaks every response parse.
+
 ## Preconditions (check before touching any code)
 
 1. **The account must be v2-enabled.** A v1-only account gets `403 VERSION_NOT_ALLOWED`
@@ -41,7 +59,7 @@ Apply rules in the order listed.
 - API-016: Data does not carry over — cutover planning (not a code change)
 - API-017: New in v2 (informational)
 - API-018: Async task polling — the task id moved and the status values changed
-- Quick Reference: search-and-replace checklist
+- Applying the rules: order and hazards
 
 ---
 
@@ -83,6 +101,17 @@ search-and-replace that only swaps `v1` for `v2`.
 2. For each, look up the table above. Do NOT blanket-replace `v1` -> `v2`: three paths
    are removed entirely and `memories` becomes `memory`.
 3. For removed paths, apply API-012/013/014 (flag, do not rewrite).
+4. **If the version lives in a constant, do not bump it.** A typed client usually has
+   something like `const apiVersion = "v1"` feeding six path roots. Changing it to `"v2"`
+   silently repoints the three *removed* endpoints at `/api/v2/...`, where they 404 — which
+   turns a documented, flaggable blocker into what looks like an outage. Split it instead:
+
+   ```go
+   const apiVersion       = "v2"   // migrated endpoints
+   const legacyAPIVersion = "v1"   // EVEROS-MIGRATION: removed in v2, see API-012/013/014
+   ```
+
+   Pin the removed roots to the legacy constant so they fail loudly and stay findable.
 
 ---
 
@@ -164,7 +193,28 @@ required; message timestamps change unit (see API-004).
 - An assistant turn carrying tool calls uses the OpenAI shape (`tool_calls`), followed by
   a `role: "tool"` message carrying `tool_call_id`.
 
+### Where does `sender_id` come from?
+
+`sender_id` is **required on every message** for a raw HTTP caller. v1 had a single
+top-level `user_id` and no per-message sender, so there is usually **no agent id anywhere
+in a v1 codebase to migrate from** — you have to introduce one.
+
+- A **user** turn takes the user id that used to be the top-level `user_id`.
+- An **assistant** turn takes the agent's own id. Introduce one (a stable string such as
+  `"acme-assistant"`, ideally configurable) and flag it for the customer to confirm.
+- This is not cosmetic. Per API-015, `sender_id` is what decides whether a write becomes
+  agent memory, so stamping every turn with the human's id silently reclassifies the whole
+  conversation.
+- If you omit `sender_id`, the Python SDK defaults it to the **role string**, producing
+  memories owned by a user literally called `"user"`. Raw callers should never rely on
+  that: send it explicitly.
+
 ### Steps:
+0. **If a message already carries `sender_id`, keep that value.** 0.4.x's personal add
+   already accepted a per-message `sender_id`, so a v1 codebase may well have attributed
+   assistant turns correctly. Overwriting them with the top-level `user_id` is silent,
+   permanent, and lands in the extracted memory rather than in an error. Only fill in
+   messages that lack one.
 1. FIND the v1 add payload construction.
 2. MOVE the top-level `user_id` into each message object as `sender_id`. If the code
    built messages in a loop, `sender_id` must be set per iteration — an assistant turn
@@ -214,12 +264,37 @@ mixing the two scales would mis-order and mis-split sessions.
    must supply it (`timestamp` is a required field on `MessageItem`).
 
 ```python
-# WRONG (v1-era, accepted; v2 rejects with 422)
-"timestamp": int(time.time())
-
-# RIGHT
-"timestamp": int(time.time() * 1000)
+# WRONG                          # RIGHT
+"timestamp": int(time.time())    "timestamp": int(time.time() * 1000)
 ```
+
+Per language:
+
+| Language | Correct form |
+|---|---|
+| Python | `int(time.time() * 1000)` |
+| JS / TS | `Date.now()` — already milliseconds; the bug is a `/ 1000` |
+| Go | `time.Now().UnixMilli()` |
+| Java | `System.currentTimeMillis()` |
+| Shell | `$(( $(date +%s) * 1000 ))` |
+
+**Shell needs the portable form.** `date +%s%3N` is GNU-only: BSD/macOS `date` has no `%N`
+and emits the literal `3N`, producing a timestamp the server rejects. The portable form
+costs sub-second precision, which is fine for live traffic but matters for a backfill —
+see API-016.
+
+### Search by the sink, not the source
+
+Matching `time.time()` misses the common shapes:
+
+```python
+now = datetime.now(timezone.utc)      # any argument defeats a literal pattern
+ts  = int(now.timestamp())            # and the two-line form defeats it entirely
+```
+
+Search for what flows **into** the field: every `"timestamp":` / `timestamp=` assignment,
+plus `\.timestamp\(\)`, `time\.time\(\)`, `Date\.now\(\)`, `\.Unix\(\)`,
+`date \+%s`, `/ *1000`, and any 10-digit integer literal in a fixture.
 
 ---
 
@@ -332,7 +407,7 @@ deliberately, not by default.
 
 **add** — before (v1) / after (v2):
 ```json
-{"data": {"request_id": "0217...", "message_count": 4, "status": "accumulated", "message": "Messages accepted"}}
+{"data": {"task_id": "0217...", "message_count": 4, "status": "accumulated", "message": "Messages accepted"}}
 {"request_id": "0217...", "data": {"message_count": 4, "status": "extracted"}}
 ```
 
@@ -357,8 +432,12 @@ deliberately, not by default.
 `agent_skills` / `total_count` / `count`.
 
 ### Steps:
-1. FIND response field access on add/flush results. `response["data"]["request_id"]`
-   becomes `response["request_id"]`.
+1. FIND response field access on add/flush results.
+   - **flush:** `response["data"]["request_id"]` becomes `response["request_id"]`.
+   - **add:** v1 carried `data.task_id`, not `data.request_id` (0.4.1's `AddResult` fields
+     are `message`, `message_count`, `status`, `task_id`). v2 drops it and the id to poll
+     with becomes the envelope's `request_id` — see **API-018**, which is where async
+     callers should go.
 2. FIND `raw_messages` -> `unprocessed_messages`.
 3. FIND `agent_memory` access — it is now two arrays; a caller that read a single object
    needs restructuring, not a rename.
@@ -418,10 +497,39 @@ delete, which is coarser. FLAG these call sites.
 {"code": "HTTP_ERROR", "message": "Settings not initialized", "request_id": "0217...", "timestamp": "2026-09-04T19:16:42Z", "path": "/api/v1/settings"}
 ```
 
-**After (v2):**
+**After (v2):** there is **no single shape**. Three are in use, verified live on prod
+(2026-09-14):
+
 ```json
-{"code": "InvalidParameter", "message": "...", "param": "messages[0].timestamp", "type": "UnprocessableEntity", "status_code": 422}
+// 400, 404, and 422 InvalidParameter — flat
+{"code": "InvalidParameter", "message": "...", "param": "messages[0].timestamp",
+ "type": "UnprocessableEntity", "status_code": 422}
+
+// 422 from request-model validation — enveloped, with request_id
+{"request_id": "unknown", "error": {"code": "invalid_argument", "message": "Value error, ..."}}
+
+// 401 — enveloped, without request_id
+{"error": {"code": "AuthenticationError", "message": "...", "param": "",
+           "type": "Unauthorized", "status_code": 401}}
 ```
+
+The contract declares `ErrorEnvelope` (`{request_id, error:{code, message}}`),
+`HTTPValidationError` (`{detail: [...]}`) and `GatewayError`, whose own description admits
+the shape "is not yet uniform across auth/quota/rate-limit paths — treat fields as
+best-effort". `param` and `status_code` appear nowhere in the contract but do appear on the
+wire.
+
+**So: branch on the HTTP status code, and read the body defensively.**
+
+```python
+body = resp.json()
+err  = body.get("error", body)          # handles both flat and enveloped
+code = err.get("code")
+msg  = err.get("message")
+```
+
+Also note two status codes that are easy to get wrong: a **missing required field returns
+400**, not 422, and a **bad value returns 422**.
 
 | v1 | v2 | Notes |
 |---|---|---|
@@ -436,8 +544,12 @@ delete, which is coarser. FLAG these call sites.
 ### Steps:
 1. FIND error handling that string-matches `"HTTP_ERROR"` and rewrite against the
    HTTP status code plus the new `code`/`type` values.
-2. Prefer branching on `status_code` (403 = not v2-enabled, 422 = bad request,
-   429 = quota) over parsing `message`.
+2. Branch on the **HTTP status**, never on a body field and never on `message` text:
+   401 = bad or wrong-environment key, 403 = account not v2-enabled, 400 = missing field,
+   422 = bad value, 429 = quota. Use the body only for the human-readable detail.
+3. Unwrap defensively with `body.get("error", body)`. Code that reaches straight for
+   `body["code"]` breaks on 401 and on validation errors; code that reaches straight for
+   `body["error"]["code"]` breaks on 400, 404 and 422 InvalidParameter.
 
 ---
 
@@ -502,6 +614,15 @@ There is no way to produce that in v2 today.
    # Contact EverOS before choosing.
    ```
 2. Do NOT delete the code and do NOT invent a replacement.
+
+   **Flagging by format.** A comment is not always available:
+
+   | Format | How to flag |
+   |---|---|
+   | Python, Go, TS, Java | A comment above the call site |
+   | Shell | A comment **on its own line above** the command. A trailing comment swallows the rest of the line, and a comment placed after a `\` continuation silently splits one command into two. `bash -n` accepts both corruptions. |
+   | JSON, Postman collections | No comment syntax exists. Put the reason in a `description` or metadata field, and **move the item into a separate file CI does not run**. Postman has no per-request disable, and `postman.setNextRequest(null)` does not prevent the request firing. |
+   | VCR cassettes, recorded fixtures | Same: reason in a metadata field, move out of the executed set. |
 3. Report the count of flagged group call sites prominently in the final summary — this
    is the finding that determines whether the migration can complete at all.
 
@@ -595,7 +716,10 @@ change fixes this.
    transition window, or a backfill of historical conversations through `/api/v2/memory/add`.
 2. If backfilling, note that historical messages need real historical timestamps in
    **milliseconds** (API-004), and that extraction is per-`session_id`, so the original
-   conversation boundaries must be preserved to get comparable episodes.
+   conversation boundaries must be preserved to get comparable episodes. If the backfill is
+   driven from shell, the portable `$(( $(date +%s) * 1000 ))` form loses sub-second
+   precision — fine for live traffic, but it can reorder messages that arrived within the
+   same second. Carry the original millisecond value through instead of re-deriving it.
 3. Do not delete v1 data until v2 is verified in production.
 
 ---
@@ -681,34 +805,38 @@ timeout. Nothing raises, and nothing logs.
 
 ---
 
-## Quick Reference: search-and-replace checklist
+## Applying the rules: order and hazards
 
-Mechanical (safe to apply directly):
+There is no blanket search-and-replace table in this file. The one that used to be here was
+order-dependent and mislabelled "safe": applying the `add` row before the others turns
+`/api/v1/memories/get` into `/api/v2/memory/add/get`, and it contradicts API-001's own
+instruction not to blanket-replace.
+
+Work in this order:
+
+1. **Record the blockers first.** Count and locate every `/api/v1/groups`, `/api/v1/senders`,
+   `/api/v1/settings`, `memory_id` delete and `raw_message` **before** any path rewrite,
+   while they are still findable.
+2. **Types and shared constants** (typed clients): the type layer, then split the version
+   constant per API-001 step 4.
+3. **Endpoint paths**, one rule at a time, anchored. `/api/v1/memories` as the add endpoint
+   must be anchored to end-of-token (`"`, `'`, end of line) or it eats the sub-paths.
+4. **Request bodies** — API-003, API-004, API-005, API-006.
+5. **Response handling** — API-008. Remember `data` stays on the wire.
+6. **Errors** — API-010, branching on status.
+7. **Task polling** — API-018.
+8. **Recorded fixtures, cassettes and collections** last, so they match the code you just
+   wrote.
+
+Two substitutions are genuinely portable and context-free:
 
 | Find | Replace |
 |---|---|
-| `/api/v1/memories/flush` | `/api/v2/memory/flush` |
-| `/api/v1/memories/get` | `/api/v2/memory/get` |
-| `/api/v1/memories/search` | `/api/v2/memory/search` |
-| `/api/v1/memories/delete` | `/api/v2/memory/delete` |
-| `/api/v1/memories` (add) | `/api/v2/memory/add` |
-| `/api/v1/object/sign` | `/api/v2/object/sign` |
-| `/api/v1/tasks/` | `/api/v2/tasks/` |
 | `"episodic_memory"` | `"episode"` |
-| `raw_messages` | `unprocessed_messages` |
+| `raw_messages` (response field) | `unprocessed_messages` |
 
-Requires restructuring (not find-and-replace):
-- `user_id` -> per-message `sender_id` (API-003)
-- `filters: {...}` -> top-level `user_id`/`agent_id` (API-006)
-- seconds -> milliseconds timestamps (API-004)
-- `agent_memory` -> `agent_case` / `agent_skill` (API-007)
-- delete `204` -> `200` + body (API-009)
-- error `"HTTP_ERROR"` matching (API-010)
-- async task polling: the id moved to the envelope's `request_id`, and `completed` became `success` (API-018)
+Everything else needs the rule.
 
-Flag only, never rewrite:
-- anything touching `group` (API-012)
-- `/senders` (API-013)
-- `/settings` (API-014)
-- `"raw_message"` as a `get` type (API-007)
-- `memory_id`-based single delete (API-009)
+**Flag only, never rewrite:** anything touching `group` (API-012), `/senders` (API-013),
+`/settings` (API-014), `memory_id`-based delete (API-009), `"raw_message"` as a retrieval
+type (API-007).

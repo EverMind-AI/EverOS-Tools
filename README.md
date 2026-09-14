@@ -47,11 +47,17 @@ The CLI auto-detects your installed tools and copies the skill to the correct di
 ## What it does to your repository
 
 - **`--scan` writes nothing.** It reads your code and prints a report. Use it first.
-- **It recommends a branch before editing.** The whole migration lands as one reviewable
-  diff you can abandon with a single command.
-- **It does not read your secrets.** It needs to know which files reference `EVEROS_API_KEY`
-  or `EVER_OS_BASE_URL`; it matches those by file name only and never opens them to read a
-  value or quotes one in its output.
+- **It checks before it edits.** A pre-flight gate runs before the first change: your
+  Python version against the target's floor, whether your EverOS calls are on an async
+  path, how many capabilities have no v2 equivalent, and whether your working tree already
+  has uncommitted work in the files it is about to touch. Any of those can stop the run.
+- **It takes a snapshot first**, and recommends a branch, so the whole migration is one
+  reviewable diff and one command to undo.
+- **It never reports success it has not verified.** The report leads with how many call
+  sites will still raise at runtime. A flagged call site is still a call site.
+- **It does not read your secrets.** It needs to know which files reference credential
+  variables, never their values, and it will not quote a line that looks like a key from
+  any file.
 - **It flags rather than guesses.** Anything with no equivalent in the target version is
   marked in place with a comment explaining the options. It is never silently deleted,
   rewritten, or approximated.
@@ -63,11 +69,17 @@ makes is documented in the migration rules under `migration/`, and can be applie
 
 ## Supported migrations
 
-| Hop | Caller | Rule file |
-|---|---|---|
-| v0 -> v1 (`evermemos` -> `everos-cloud` 0.x) | Python SDK | `migration/python/v0-to-v1.md` |
-| v1 -> v2 (API v1 -> v2) | Any HTTP caller | `migration/http/v1-to-v2.md` |
-| v1 -> v2 (`everos-cloud` 0.4.x -> 1.x) | Python SDK | `migration/python/v1-to-v2.md` |
+| Hop | Caller | Rule file | Reference examples |
+|---|---|---|---|
+| v0 -> v1 (`evermemos` -> `everos-cloud` 0.x) | Python SDK | `migration/python/v0-to-v1.md` | `examples/python/v0.py`, `v1.py` |
+| v1 -> v2 (API v1 -> v2) | Any HTTP caller | `migration/http/v1-to-v2.md` | `examples/typescript/`, `examples/go/` |
+| v1 -> v2 (`everos-cloud` 0.4.x -> 1.x) | Python SDK | `migration/python/v1-to-v2.md` | `examples/python/v1.py`, `v2.py` |
+
+### Before you start (Python)
+
+`everos-cloud` 1.x requires **Python 3.12 or newer**; 0.4.x required 3.9. The tool checks
+this first and refuses to migrate a project targeting anything older, because rewriting the
+code and then failing to install the package leaves you running on neither version.
 
 ### A note on version names
 
@@ -102,10 +114,9 @@ everos-tools/
 │               │       ├── v0-to-v1.md
 │               │       └── v1-to-v2.md
 │               └── examples/
-│                   └── python/
-│                       ├── v0.py
-│                       ├── v1.py
-│                       └── v2.py
+│                   ├── python/       # v0.py, v1.py, v2.py
+│                   ├── typescript/   # v1.ts, v2.ts
+│                   └── go/           # v1.go, v2.go
 ├── .github/
 │   └── workflows/
 │       └── validate-plugins.yml

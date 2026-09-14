@@ -22,8 +22,30 @@ Same as `../http/v1-to-v2.md`: the account must be v2-enabled (`403 VERSION_NOT_
 otherwise), the API key does not change, v1 keeps working, and **existing memories do
 not carry over** (API-016).
 
+### PRE-001: Python 3.12 or newer is required — check this first
+
+| Package | `requires_python` |
+|---|---|
+| `everos-cloud` 0.4.1 | `>=3.9` |
+| `everos-cloud` 1.1.0 | **`>=3.12`** |
+
+The interpreter floor moved three minor versions, and it is not mentioned in the public
+migration guide. **Check it before touching a single call site.**
+
+```
+Grep pattern="requires-python|python_requires|python-version" glob="{pyproject.toml,setup.cfg,setup.py,.python-version,*.yml,*.yaml}"
+```
+
+If any declared target, CI matrix entry or `.python-version` is below 3.12, **STOP and
+report it**. Migrating the code first produces the worst possible outcome: every call site
+rewritten to the 1.x surface, then `pip install -U everos-cloud` quietly resolving back to
+0.4.x (or `uv sync` hard-failing), leaving a repo that runs on neither version. Every
+syntax check passes. Python 3.11 is supported until late 2027, so this is a live case, not
+a corner one.
+
 ## Contents
 
+- PRE-001: Python 3.12 or newer is required — check before anything else
 - SDK-001: Package dependency (version constraint only)
 - SDK-002: Client construction — `base_url` -> `host`, and **env vars are no longer read**
 - SDK-003: Removed constructor options (`max_retries`, `http_client`, headers)
@@ -39,8 +61,10 @@ not carry over** (API-016).
 - SDK-013: Type imports — `everos_cloud.types.v1` is gone
 - SDK-014: REMOVED — `groups`, `senders`, `settings` resources
 - SDK-015: Low-level clients and the 1.1.0 surface (informational)
-- SDK-016: Task polling — the task id moved off the response and `completed` became `success`
-- Quick Reference: search-and-replace checklist
+- SDK-017: `object.sign` -> `presign` (signature + error contract)
+- SDK-018: Test doubles, fakes and fixtures
+- SDK-016: Task polling — the task id moved off the add response onto the envelope
+- Applying the rules: order and hazards
 
 ---
 
@@ -126,7 +150,12 @@ production host. Code that pointed at a dev or test gateway via the environment 
 1. FIND every `EverOS(` construction, including in tests, fixtures, and conftest files.
 2. RENAME `base_url=` to `host=`.
 3. If `api_key` was omitted, add `api_key=os.environ["EVEROS_API_KEY"]` explicitly.
-4. **Search the whole repo for `EVER_OS_BASE_URL`** — including `.env` files,
+4. **Rewrite, do not merely flag.** This is the one place where flagging *creates* the
+   failure it warns about: a comment above an unchanged `EverOS(...)` leaves CI, staging
+   and every container pointed at production. Wherever `EVER_OS_BASE_URL` is set anywhere
+   in the repo, write `host=os.environ.get("EVER_OS_BASE_URL")` into **every** `EverOS(`
+   construction, then flag it for review. Flag the review, not the bug.
+5. **Search the whole repo for `EVER_OS_BASE_URL`** — including `.env` files,
    docker-compose, CI configs, Dockerfiles and shell scripts. Match **file names only**:
    those files usually hold `EVEROS_API_KEY` and its live value on a neighbouring line, and
    you only need to know which files reference the variable, never what any of them are set
@@ -134,9 +163,9 @@ production host. Code that pointed at a dev or test gateway via the environment 
    variable is set anywhere and is not explicitly passed to `host=`, FLAG it loudly:
    ```python
    # EVEROS-MIGRATION: 1.x no longer reads EVER_OS_BASE_URL from the environment.
-   # This client will hit PRODUCTION unless host= is passed explicitly.
+   # host= is now passed explicitly below — confirm it points where you intend.
    ```
-5. Consider adding `app_id=` / `project_id=` here — they are client-level defaults that
+6. Consider adding `app_id=` / `project_id=` here — they are client-level defaults that
    every call inherits, which is cleaner than passing them per call (see http API-005).
 
 ---
@@ -159,10 +188,33 @@ EverOS(api_key, *, host=None, app_id="default", project_id="default", timeout=<f
 | `default_headers=` / `default_query=` | *(none)* | No per-client header injection |
 | `timeout=httpx.Timeout(...)` | `timeout=<float>` | Seconds only, applied to every request |
 
+### Also removed: `EVER_OS_CUSTOM_HEADERS`
+
+0.4.x read this environment variable and merged it into `default_headers`
+(`everos_cloud/_client.py:88`). 1.x reads no environment at all and has no
+`default_headers` parameter, so a deployment injecting a routing or tenant header through
+it loses that header silently. Grep for the variable name alongside the other two.
+
+### Also changed: the HTTP transport
+
+| | 0.4.x | 1.x |
+|---|---|---|
+| Transport | `httpx` | `urllib3` |
+
+Nothing in the call surface exposes this, but test suites do. `respx`,
+`httpx.MockTransport` and `httpx_mock` stop intercepting after the upgrade, so tests either
+hit the network or fail in a way that looks unrelated to the migration. httpx-specific
+proxy, certificate and `trust_env` configuration stops applying, and any instrumentation
+hooked into httpx goes dark. FLAG all of these.
+
 ### Steps:
-1. FLAG any construction using these. Retries in particular are a silent reliability
-   regression — 0.4.x retried twice by default, 1.x does not retry at all.
-2. If the code relied on `max_retries`, suggest wrapping calls in the user's own retry
+1. **Delete the removed keyword arguments; do not merely flag them.** `EverOS.__init__` is
+   `(api_key, *, host, app_id, project_id, timeout)`, so leaving `max_retries=` or
+   `http_client=` in place is a hard `TypeError` and the client never constructs. Remove
+   the argument, then flag the behaviour that was lost.
+2. Retries in particular are a silent reliability regression — 0.4.x retried twice by
+   default, 1.x does not retry at all.
+3. If the code relied on `max_retries`, suggest wrapping calls in the user's own retry
    (e.g. `tenacity`), and note that `EverOSAPIError` carries `.status` for deciding
    what is retryable (429 / 5xx).
 
@@ -267,10 +319,15 @@ result = client.add(
         "content": "I love hiking",
         "timestamp": int(time.time() * 1000),  # unix MILLISECONDS
     }],
-    async_mode=False,
+    async_mode=True,            # keep the caller's existing value; see the note below
 )
 # result is AddData: result.message_count, result.status
 ```
+
+> **Do not change `async_mode` while migrating.** The flag means the same thing in both
+> versions. Flipping a fire-and-forget write to synchronous moves extraction inline and
+> changes request latency, and it orphans any downstream task poll. If the caller polls
+> the task afterwards, see SDK-016 — the facade cannot reach the task id at all.
 
 Signature: `add(session_id, messages, *, mode=None, async_mode=None, app_id=None, project_id=None)`
 
@@ -412,7 +469,7 @@ sort_by=None, sort_order=None, filters=None, app_id=None, project_id=None)`
 | 0.4.x | 1.x | Notes |
 |---|---|---|
 | `memory_type="episodic_memory"` | `"episode"` (positional) | See http API-007 |
-| `rank_by=` / `rank_order=` | `sort_by=` / `sort_order=` | Renamed |
+| `rank_by=` / `rank_order=` | `sort_by=` / `sort_order=` | Renamed **and narrowed.** 0.4.x `rank_by` was a free-form `str`; v2 `sort_by` is `enum["timestamp", "updated_at"]` and `GetInput` is `additionalProperties: false`. Any other value is a runtime 422. |
 | `filters={"user_id": x}` | `user_id=x` | |
 | `filters={"group_id": x}` | *(none)* | **REMOVED — FLAG** |
 
@@ -456,7 +513,7 @@ Signature: `delete(*, user_id=None, agent_id=None, session_id=None, app_id=None,
 | `memory_id=` | *(none)* | **REMOVED — no single-memory delete. FLAG.** |
 | `group_id=` | *(none)* | **REMOVED — see http API-012. FLAG.** |
 | `sender_id=` | *(none)* | **REMOVED. FLAG.** |
-| `user_id=` / `session_id=` | same | Now keyword-only |
+| `user_id=` / `session_id=` | same | Unchanged. 0.4.x's `delete` was already keyword-only. |
 | returns `None` (204) | returns `DeleteData` | See SDK-011 and http API-009 |
 
 ### Semantics to re-check (http API-009):
@@ -543,7 +600,23 @@ except EverOSAPIError as e:
    failures surface as the underlying `urllib3`/generated-client exceptions, not as an
    `EverOSError`. FLAG any `except APIConnectionError` / `except APITimeoutError`.
 3. `except EverOSError` keeps working (it is still the base class) — leave those alone.
-4. **`EverOSAPIError` only covers errors the gateway returned.** 1.x validates the request
+4. **A low-level `client.memory.*` / `client.storage.*` call raises `ApiException`, not
+   `EverOSAPIError`.** Only the facade's `_call` wrapper performs that translation, and
+   `issubclass(ApiException, EverOSError)` is `False`. This matters because SDK-016 sends
+   async pollers to the low-level client: apply both rules literally and the handler
+   SDK-012 just rewrote becomes dead code, with no error raised at any point. The same call
+   also bypasses the client's `timeout`, which `_call` supplies via `_request_timeout`.
+
+   ```python
+   from everos_cloud import EverOSAPIError
+   from everos_cloud.exceptions import ApiException
+
+   try:
+       envelope = client.memory.add_memory(payload, _request_timeout=60)
+   except (EverOSAPIError, ApiException) as e:
+       ...   # ApiException also carries .status
+   ```
+5. **`EverOSAPIError` only covers errors the gateway returned.** 1.x validates the request
    body with pydantic *before* anything is sent, and those failures raise
    `pydantic_core.ValidationError`, which derives from `ValueError` and is **not** an
    `EverOSError` subclass. 0.4.x sent the same input to the server and surfaced it as a
@@ -644,7 +717,7 @@ response = client.v1.memories.add(
     user_id=u, session_id=s, messages=msgs, async_mode=True,
 )
 task = client.v1.tasks.retrieve(response.data.task_id)
-if task.data.status in ("completed", "failed", "error"):
+if task.data.status in ("success", "failed"):
     ...
 ```
 
@@ -683,7 +756,7 @@ task = client.task_wait(envelope.request_id, timeout=180, interval=3)
 | `response.data.task_id` | `envelope.request_id` | **The add response carries no task id.** `AddData` has only `message_count` and `status`. |
 | `client.v1.tasks.retrieve(id)` | `client.task_get(id)` | Returns an unwrapped `TaskItem`: `id`, `status`, `task_type`, `created_at`, `finished_at`, `error` |
 | *(hand-rolled poll loop)* | `client.task_wait(id, ...)` | `timeout` / `interval` / `max_interval` / `raise_on_failure`, with backoff |
-| `status == "completed"` | `status == "success"` | **Silent failure if missed** — see below |
+| `status` values | unchanged for SDK callers | 0.4.x already declared `Literal["processing", "success", "failed"]` — see the note below |
 
 ### Two traps
 
@@ -692,10 +765,18 @@ and discards the envelope, so `request_id` is unreachable through it. An async c
 polls must use `client.memory.add_memory(...)`. SDK-011 says the facade drops the envelope;
 this is the case where that actually costs you something.
 
-**2. The terminal status set changed, and a stale check fails silently.** v2 statuses are
-`queued`, `pending`, `processing`, `success`, `failed`. Only `success` and `failed` are
-terminal. A leftover `in ("completed", "failed", "error")` is never true for a successful
-task, so the poll spins to its own timeout with nothing raised and nothing logged.
+**2. The status vocabulary is mostly unchanged — for SDK callers.** 0.4.x already types
+`TaskStatusResult.status` as `Literal["processing", "success", "failed"]`, so a codebase
+written against the SDK types is already comparing against `"success"`. The string
+`"completed"` does not appear anywhere in the 0.4.1 wheel. v2 adds `queued` and `pending`
+as further non-terminal states; the terminal pair is unchanged.
+
+> A **raw HTTP** caller that hard-coded `"completed"` against an older API generation is a
+> separate case — see API-018. Do not go hunting for `"completed"` in SDK code.
+
+What to check instead: that the non-terminal set covers `queued`, `pending` **and**
+`processing`, and that only `success` and `failed` stop the loop. A check that treats
+`processing` as terminal reports a task finished before it is.
 
 ### Note on the low-level client
 
@@ -712,34 +793,99 @@ The generated client does **not**: `MessageItem.content` is typed `Content`, so 
 
 ---
 
-## Quick Reference: search-and-replace checklist
+## SDK-017: `object.sign` -> `presign`
 
-Mechanical (safe to apply directly):
+### Change Type: BREAKING - Signature + Error Contract
 
-| Find | Replace |
+API-001 lists `/api/v1/object/sign` -> `/api/v2/object/sign` as a path-only change. At the
+SDK level it is not.
+
+**Before (0.4.x):**
+```python
+resp = client.v1.object.sign(object_list=[{"object_name": "a.png", "method": "PUT"}])
+if resp.status != 0:
+    handle(resp.error)
+urls = resp.result
+```
+
+**After (1.x):**
+```python
+urls = client.presign([{"object_name": "a.png", "method": "PUT"}])   # positional
+```
+
+| 0.4.x | 1.x | Notes |
+|---|---|---|
+| `client.v1.object.sign(object_list=[...])` | `client.presign([...])` | Keyword becomes positional |
+| returns an envelope with `.result` / `.status` / `.error` | returns the unwrapped data | See SDK-011 |
+| non-zero `.status` returned, not raised | raises **`EverOSStorageError`** | An `if resp.status != 0:` branch becomes unreachable |
+
+### Steps:
+1. Rewrite the call and drop the `object_list=` keyword.
+2. **Convert the status check into exception handling.** A caller that inspected
+   `.status` silently stops handling storage failures otherwise.
+3. Search patterns: `.v1.object.`, `object.sign(`, `object_list=`.
+
+---
+
+## SDK-018: Test doubles, fakes and fixtures
+
+### Change Type: BREAKING - and the main source of false confidence
+
+**No rule elsewhere covers this, and it is usually the largest single hand-edit in a
+migration.** A fake that still returns the v1 shape keeps the suite green while production
+is broken, which is exactly the outcome this whole rule set exists to prevent.
+
+Every one of these has to move with the code:
+
+| Double | What changes |
 |---|---|
-| `client.v1.memories.` | `client.` |
-| `base_url=` (in an `EverOS(...)` call) | `host=` |
-| `"episodic_memory"` | `"episode"` |
-| `rank_by=` / `rank_order=` (on get) | `sort_by=` / `sort_order=` |
-| `response.data.episodes` | `result.episodes` (drop one `.data`) |
-| `everos-cloud>=0.4` / `everos-cloud<1` | `everos-cloud>=1.1.0` |
+| A fake client exposing `v1.memories.*` | Flat facade verbs (SDK-005) |
+| A fake returning an envelope | Returns the `*Data` payload directly (SDK-011) |
+| `tasks.retrieve` fakes | `task_get` / `task_wait`, returning `TaskItem` with `.id` (SDK-016) |
+| A fake for an async poller | Must fake `client.memory.add_memory` returning `SuccessEnvelopeAddData`, because SDK-016 routes that path through the generated client |
+| Recorded responses (VCR cassettes, JSON fixtures, Postman) | Field renames from API-008: `raw_messages` -> `unprocessed_messages`, `agent_memory` -> two arrays, `request_id` moved to the envelope |
+| `delete` fakes returning `None` | Return a `DeleteData` (`filters`, `count`) |
+| `respx` / `httpx.MockTransport` / `httpx_mock` | **Stop intercepting entirely** — 1.x is on `urllib3` (SDK-003) |
 
-Requires restructuring (not find-and-replace):
-- `add()`: `user_id=` -> per-message `sender_id`, `session_id` required (SDK-006)
-- timestamps: seconds -> milliseconds (SDK-006 / http API-004)
-- `flush(user_id=)` -> `flush(session_id)` (SDK-007)
-- `filters={...}` -> `user_id=` / `agent_id=` (SDK-008, SDK-009)
-- granular exceptions -> `EverOSAPIError` + `.status` (SDK-012)
-- `everos_cloud.types.v1` imports (SDK-013)
-- async task polling: `response.data.task_id` -> `envelope.request_id`, and `"completed"` -> `"success"` (SDK-016)
-- the module-level import of any removed symbol, which must be moved or deleted even when the call itself is only flagged (SDK-004, SDK-013)
+### Steps:
+1. Locate every double: `conftest.py`, `tests/**`, `**/fixtures/**`, `**/cassettes/**`,
+   `*.postman_collection.json`, and any class whose name contains `Fake`, `Mock`, `Stub` or
+   `Dummy` near an EverOS import.
+2. Migrate each to the target shape. Where a double asserts on a field that moved, the
+   assertion is the thing that has to change, not the production code.
+3. If a double cannot be migrated because it covers a removed capability, mark the test
+   `skip` with the migration reason. Do not delete it and do not leave it failing — the
+   skip is the record of what the customer still has to decide.
 
-Flag only, never rewrite:
-- `EVER_OS_BASE_URL` set but not passed to `host=` — **silently hits production** (SDK-002)
-- `AsyncEverOS` / any `await client.` (SDK-004)
-- `max_retries=` / `http_client=` / `default_headers=` (SDK-003)
-- `groups`, `senders`, `settings`, `group_id` (SDK-014)
-- `delete(memory_id=...)` (SDK-010)
-- `memory_type="raw_message"` (SDK-009)
-- `memory_type="agent_memory"` — needs a human decision (SDK-009)
+---
+
+## Applying the rules: order and hazards
+
+There is no search-and-replace table in this file. The one that used to be here caused
+more damage than it saved: `client.v1.memories.` -> `client.` also rewrites
+`client.v1.memories.group.add(...)` and `client.v1.memories.agent.add(...)`, which
+SDK-014 requires be left alone and flagged. Worse, it is self-concealing — once the
+`.v1.` marker is gone, the blocker pass cannot find those call sites and the Impact
+Report shows **zero** group calls on a codebase full of them.
+
+Work rule by rule instead, in this order:
+
+1. **PRE-001** — Python 3.12 floor. Stop here if it fails.
+2. **Blocker inventory** — SDK-004, SDK-014, SDK-010's `memory_id`, SDK-003's removed
+   kwargs. Record `file:line` for each **before** any rewrite, while the `.v1.` markers
+   are still intact.
+3. **SDK-013** — type imports, and **SDK-018** type-level doubles. In a typed codebase
+   nothing else checks out until these are right.
+4. **SDK-002 / SDK-003** — client construction.
+5. **SDK-005 through SDK-011** — call sites and response access, one rule at a time.
+   Restrict any `client.v1.memories.` rewrite to the five facade verbs explicitly:
+   `add`, `search`, `get`, `flush`, `delete`.
+6. **SDK-016 / SDK-017** — task polling and storage.
+7. **SDK-012** — exception handling, after the call sites it has to wrap.
+8. **SDK-018** — the remaining doubles and fixtures.
+9. **SDK-001** — the dependency pin, **last**. Bumping it earlier makes an interrupted
+   run look finished.
+
+Portable across every rule: `episodic_memory` -> `episode`, and `raw_messages` ->
+`unprocessed_messages` in response handling. Those two are safe as literal substitutions.
+Nothing else in this file is.
