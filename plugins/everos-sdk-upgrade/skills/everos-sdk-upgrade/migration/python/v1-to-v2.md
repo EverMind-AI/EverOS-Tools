@@ -127,8 +127,11 @@ production host. Code that pointed at a dev or test gateway via the environment 
 2. RENAME `base_url=` to `host=`.
 3. If `api_key` was omitted, add `api_key=os.environ["EVEROS_API_KEY"]` explicitly.
 4. **Search the whole repo for `EVER_OS_BASE_URL`** — including `.env` files,
-   docker-compose, CI configs, Dockerfiles and shell scripts. If it is set anywhere and
-   is not explicitly passed to `host=`, FLAG it loudly:
+   docker-compose, CI configs, Dockerfiles and shell scripts. Match **file names only**:
+   those files usually hold `EVEROS_API_KEY` and its live value on a neighbouring line, and
+   you only need to know which files reference the variable, never what any of them are set
+   to. Do not open them to read values and do not quote a matched line in the report. If the
+   variable is set anywhere and is not explicitly passed to `host=`, FLAG it loudly:
    ```python
    # EVEROS-MIGRATION: 1.x no longer reads EVER_OS_BASE_URL from the environment.
    # This client will hit PRODUCTION unless host= is passed explicitly.

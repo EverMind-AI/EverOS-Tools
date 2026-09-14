@@ -44,6 +44,23 @@ npx skills add https://github.com/EverMind-AI/everos-tools
 
 The CLI auto-detects your installed tools and copies the skill to the correct directories.
 
+## What it does to your repository
+
+- **`--scan` writes nothing.** It reads your code and prints a report. Use it first.
+- **It recommends a branch before editing.** The whole migration lands as one reviewable
+  diff you can abandon with a single command.
+- **It does not read your secrets.** It needs to know which files reference `EVEROS_API_KEY`
+  or `EVER_OS_BASE_URL`; it matches those by file name only and never opens them to read a
+  value or quotes one in its output.
+- **It flags rather than guesses.** Anything with no equivalent in the target version is
+  marked in place with a comment explaining the options. It is never silently deleted,
+  rewritten, or approximated.
+- **The report is safe to share.** Counts and file locations, no source and no secrets.
+
+The tool runs inside an AI coding assistant, which means your source is read by whichever
+model that assistant uses. If that is not acceptable for your codebase, every change it
+makes is documented in the migration rules under `migration/`, and can be applied by hand.
+
 ## Supported migrations
 
 | Hop | Caller | Rule file |
