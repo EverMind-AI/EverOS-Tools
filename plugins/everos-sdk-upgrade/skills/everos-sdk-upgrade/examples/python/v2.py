@@ -157,6 +157,48 @@ def handle_errors(client: EverOS):
         raise
 
 
+# SDK-016 / API-018: async writes and task polling.
+# The facade's add() returns .data, which carries NO task id -- AddData has only
+# message_count and status. The id to poll with is the envelope's request_id, so an
+# async caller has to go through the generated client to see it.
+def add_async_and_wait(client: EverOS):
+    from everos_cloud.models.add_input import AddInput
+    from everos_cloud.models.message_item import MessageItem
+    from everos_cloud.models.content import Content
+
+    envelope = client.memory.add_memory(AddInput(
+        app_id="default", project_id="default",
+        session_id=SESSION_ID, async_mode=True,
+        messages=[
+            MessageItem(
+                sender_id=USER_ID, role="user", timestamp=int(time.time() * 1000),
+                # The generated client does NOT coerce str -> Content the way the
+                # facade does, so build it explicitly or pydantic rejects the call.
+                content=Content("I love hiking in the mountains"),
+            )
+        ],
+    ))
+
+    task_id = envelope.request_id          # NOT envelope.data.task_id
+    task = client.task_wait(task_id, timeout=180, interval=3)
+
+    # v2 statuses: queued | pending | processing | success | failed.
+    # Only success and failed are terminal. "completed" is a v1 value and is never
+    # returned, so a stale check against it silently polls until it times out.
+    if task.status == "success":
+        print(f"task {task.id} finished ({task.task_type})")
+    return task
+
+
+# Hand-rolled equivalent, if you need the loop yourself
+def poll_by_hand(client: EverOS, task_id: str):
+    while True:
+        task = client.task_get(task_id)    # returns an unwrapped TaskItem
+        if task.status in ("success", "failed"):
+            return task
+        time.sleep(3)
+
+
 # SDK-015: the generated low-level clients, when the facade omits something.
 # They return the full envelope (so request_id is reachable) and raise ApiException.
 def low_level_access(client: EverOS):

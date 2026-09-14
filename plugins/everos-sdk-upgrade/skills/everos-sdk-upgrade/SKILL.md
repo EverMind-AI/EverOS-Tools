@@ -9,7 +9,7 @@ description: >
   user mentions upgrading/migrating EverOS, or dependencies contain an outdated SDK.
 user-invocable: true
 argument-hint: "[target-version, default: latest] [--scan]"
-allowed-tools: Read Grep Glob Edit Bash(python -m py_compile *) Bash(pytest *)
+allowed-tools: Read Grep Glob Edit Bash(python -m py_compile *) Bash(python -c *) Bash(pytest *)
 ---
 
 # EverOS Migration
@@ -156,9 +156,25 @@ are valid Python that fails at runtime:
   `agent_id`; `get("episode", agent_id=...)` (owner/type mismatch) — 422 at runtime
 - **Empty query string** — `search("")` is a 422
 - **Return type changes** — `delete()` returned `None` in 0.4.x, a `DeleteData` in 1.x
+- **A task id read off an add result** — `AddData` has no `task_id`, so the id now comes from
+  the envelope's `request_id` (SDK-016). Rewriting `response.data.task_id` to
+  `response.task_id` is valid Python that raises `AttributeError` on the first async write
+- **A task status compared to `"completed"`** — v2 says `success`, so the comparison is simply
+  never true and the poll spins to its own timeout. Nothing raises, nothing logs (SDK-016)
+- **A leftover import of a removed symbol** — `py_compile` accepts it; importing the module
+  does not
 
 To catch these, diff the modified code against the canonical example for the target
 version and check that call shapes and field access match.
+
+**Also import every module you touched**, not just compile it:
+
+```bash
+python -c "import <module>"
+```
+
+`py_compile` reports success on a stale import of a removed symbol; an actual import does not.
+This is a one-line check that catches a whole class of migration breakage.
 
 ### Verification examples
 
@@ -181,6 +197,18 @@ authority; fall back to the example only where the rule file is silent.
   approximate one without saying so.
 - Do NOT auto-add APIs that did not exist in the source version.
 - For complex signature rewrites, restructure carefully — NOT find-and-replace.
+- **"Flag, do not rewrite" applies to the call, not to the import.** A module-level import of
+  a symbol the target version removed (`AsyncEverOS`, anything from `everos_cloud.types.v1`)
+  raises `ImportError` at import time and takes down the **entire module**, including the
+  functions that migrated cleanly. Move such an import into the body of the function that is
+  being flagged, or delete it, then flag the call.
+- **Tests that cover a removed capability: mark them skipped with the migration reason.** Do
+  not delete them, and do not leave them failing. The skip is the record of what the customer
+  still has to decide.
+- **If you find yourself working around a gap in these rules, say so in the output.** Name the
+  rule that does not cover the case. Those comments are the highest-value lines in the run:
+  they mark exactly where a human should look, and they are what turns a one-off workaround
+  into a rule for the next run.
 - Never edit files in scan mode.
 
 ### Removals in the v1 -> v2 hop that must always be flagged, never rewritten
@@ -224,6 +252,11 @@ NEEDS A DECISION
   <N> EVER_OS_BASE_URL references not passed to host=  <- would silently hit PRODUCTION
   app_id / project_id scoping: <default / needs design because ...>
 
+VERIFY BY HAND AFTER THE RUN
+  <N> async task-polling call sites (async_mode=True + a task id or status check)
+      Both halves of this change are invisible to a syntax check: the task id moved to
+      the envelope's request_id, and "completed" became "success". See SDK-016.
+
 MECHANICAL (the tool can apply these)
   <N> endpoint paths
   <N> add() call sites
@@ -232,6 +265,7 @@ MECHANICAL (the tool can apply these)
   <N> timestamp seconds -> milliseconds
   <N> response .data unwraps
   <N> exception class references
+  <N> task polling rewrites (id source + status values)
 
 ALSO NOTE
   - Existing v1 memories do NOT carry over to v2 — the v2 store starts empty.

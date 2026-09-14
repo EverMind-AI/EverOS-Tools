@@ -40,6 +40,7 @@ Apply rules in the order listed.
 - API-015: Agent memory folded into the unified `add`
 - API-016: Data does not carry over — cutover planning (not a code change)
 - API-017: New in v2 (informational)
+- API-018: Async task polling — the task id moved and the status values changed
 - Quick Reference: search-and-replace checklist
 
 ---
@@ -61,7 +62,7 @@ search-and-replace that only swaps `v1` for `v2`.
 | `POST /api/v1/memories/search` | `POST /api/v2/memory/search` | Body rewritten — see API-006 |
 | `POST /api/v1/memories/delete` | `POST /api/v2/memory/delete` | See API-009 |
 | `POST /api/v1/object/sign` | `POST /api/v2/object/sign` | Path-only change |
-| `GET /api/v1/tasks/{task_id}` | `GET /api/v2/tasks/{task_id}` | Path-only change |
+| `GET /api/v1/tasks/{task_id}` | `GET /api/v2/tasks/{task_id}` | **Not path-only.** The id you poll with and the status values both changed — see API-018 |
 | `POST /api/v1/memories/group` | *(none)* | **REMOVED — see API-012** |
 | `POST /api/v1/memories/group/flush` | *(none)* | **REMOVED — see API-012** |
 | `POST /api/v1/groups` | *(none)* | **REMOVED — see API-012** |
@@ -611,6 +612,74 @@ Do NOT auto-add these. Mention them in the summary only.
 
 ---
 
+## API-018: Async task polling
+
+### Change Type: BREAKING - Silent for half of it
+
+If you write with `async_mode: true` and then poll the task, two independent things changed
+and neither is a path rename.
+
+### (a) The add response no longer carries a task id
+
+**Verified live on prod (2026-09-14).** An async add returns HTTP 202 and:
+
+```json
+{"data": {"message_count": 1, "status": "queued"}, "request_id": "0217894139161160..."}
+```
+
+`data` holds only `message_count` and `status`. **The id to poll with is the envelope's
+top-level `request_id`.**
+
+```
+GET /api/v2/tasks/0217894139161160...
+-> 200 {"data": {"id": "0217894139161160...", "status": "queued",
+                 "task_type": "memory_add", "created_at": "..."}, "request_id": "..."}
+```
+
+The task endpoint echoes it back as `data.id`, so the envelope's `request_id` and the task's
+`id` are the same value.
+
+This one fails loudly: reading `task_id` off the add result raises `AttributeError` (Python) or
+yields `undefined` (JS) on the first async write.
+
+### (b) The status vocabulary changed, and this half fails silently
+
+| v1 | v2 |
+|---|---|
+| `completed` | `success` |
+| *(n/a)* | `queued`, `pending`, `processing` are all non-terminal |
+| `failed` | `failed` |
+
+The full v2 set, as reported by `GET /api/v2/tasks/stats`, is
+`queued`, `pending`, `processing`, `success`, `failed`. A progression of
+`queued -> processing -> success` was observed live (2026-09-14).
+
+A leftover terminal check like:
+
+```python
+if status in ("completed", "failed", "error"):   # never true on v2
+```
+
+turns a finished task into an apparently-unfinished one, and the poll spins until its own
+timeout. Nothing raises, and nothing logs.
+
+> Treat only `success` and `failed` as terminal. A check that stops on `processing` or
+> `pending` is the mirror-image bug: it reports a task done before it is.
+
+### Steps:
+1. FIND every read of a task id off an add response. The id now comes from the envelope's
+   `request_id`, not from `data`.
+2. FIND every status comparison against `"completed"` and change it to `"success"`.
+3. Make sure the non-terminal set is `queued` / `pending` / `processing`, and that the loop
+   keeps polling on all three.
+
+### Search Patterns:
+- `task_id` anywhere near an add call
+- `tasks.retrieve(`, `/tasks/` in a URL
+- the literal `"completed"` in a status comparison
+
+---
+
 ## Quick Reference: search-and-replace checklist
 
 Mechanical (safe to apply directly):
@@ -634,6 +703,7 @@ Requires restructuring (not find-and-replace):
 - `agent_memory` -> `agent_case` / `agent_skill` (API-007)
 - delete `204` -> `200` + body (API-009)
 - error `"HTTP_ERROR"` matching (API-010)
+- async task polling: the id moved to the envelope's `request_id`, and `completed` became `success` (API-018)
 
 Flag only, never rewrite:
 - anything touching `group` (API-012)

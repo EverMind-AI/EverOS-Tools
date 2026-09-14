@@ -39,6 +39,7 @@ not carry over** (API-016).
 - SDK-013: Type imports — `everos_cloud.types.v1` is gone
 - SDK-014: REMOVED — `groups`, `senders`, `settings` resources
 - SDK-015: Low-level clients and the 1.1.0 surface (informational)
+- SDK-016: Task polling — the task id moved off the response and `completed` became `success`
 - Quick Reference: search-and-replace checklist
 
 ---
@@ -177,6 +178,19 @@ the facade is synchronous only.
 - `AsyncStream`, `AsyncAPIResponse`, `DefaultAsyncHttpxClient`, `DefaultAioHttpClient`
 
 ### Steps:
+0. **Remove the module-level import first.** "Flag, do not rewrite" applies to the *call*,
+   not to an `import` of a symbol that no longer exists. A leftover
+   `from everos_cloud import AsyncEverOS` raises `ImportError` at import time and takes down
+   the **whole module**, including the functions that migrated cleanly. Move the import into
+   the function body so only the flagged path fails:
+
+   ```python
+   def legacy_async_path():
+       from everos_cloud import AsyncEverOS   # EVEROS-MIGRATION: removed in 1.x, see below
+       ...
+   ```
+
+   `python -m py_compile` does not catch this. `python -c "import <module>"` does.
 1. FLAG every async call site — do NOT rewrite them into blocking calls silently, since
    that would block an event loop:
    ```python
@@ -339,7 +353,14 @@ filters=None, app_id=None, project_id=None)`
 | `filters={"group_id": x}` | *(none)* | **REMOVED — see http API-012, FLAG** |
 | `query=` | first positional | Must be non-empty |
 | `top_k=` | `top_k=` | Default `-1` (engine decides); explicit values 1–100 |
+| `memory_types=[...]` | *(none)* | **REMOVED.** A search can no longer be restricted to a subset of memory types. The response still separates them into `episodes` / `profiles` / `agent_cases` / `agent_skills`, so the filtering moves to the caller. |
+| `include_original_data=` | *(none)* | **REMOVED**, along with the `original_data` field it populated |
 | *(new)* | `agent_id=`, `include_profile=`, `min_score=`, `radius=`, `enable_llm_rerank=` | |
+
+> `memory_types=[...]` is where an `agent_memory` or `raw_message` value actually lives on
+> 0.4.x, not on `get` (SDK-009). `agent_memory` becomes a choice between `agent_case` and
+> `agent_skill` that only a human can make; `raw_message` has no replacement, and what used
+> to match it now arrives as `unprocessed_messages` in the response.
 
 > A `filters=` parameter still exists on 1.x `search`/`get`, but it is a **passthrough
 > for v2-native filters, not the v1 scoping dict**. Do NOT migrate
@@ -383,16 +404,24 @@ sort_by=None, sort_order=None, filters=None, app_id=None, project_id=None)`
 | 0.4.x | 1.x | Notes |
 |---|---|---|
 | `memory_type="episodic_memory"` | `"episode"` (positional) | See http API-007 |
-| `memory_type="agent_memory"` | `"agent_case"` or `"agent_skill"` | **Split — needs a human decision** |
-| `memory_type="raw_message"` | *(not retrievable)* | **FLAG — no replacement** |
+| `rank_by=` / `rank_order=` | `sort_by=` / `sort_order=` | Renamed |
 | `filters={"user_id": x}` | `user_id=x` | |
 | `filters={"group_id": x}` | *(none)* | **REMOVED — FLAG** |
-| `rank_by=` / `rank_order=` | `sort_by=` / `sort_order=` | Renamed |
 
 ### Constraint:
 Owner and type must agree — `user_id` may only ask for `episode`/`profile`; `agent_id`
 may only ask for `agent_case`/`agent_skill`. A mismatch is a 422 at runtime, not a
 syntax error.
+
+### `agent_memory` and `raw_message` are NOT `get` values — look on `search`
+
+0.4.x's `get(memory_type=...)` is typed
+`Literal['episodic_memory', 'profile', 'agent_case', 'agent_skill']`, so it never accepted
+`agent_memory` or `raw_message`. Both appear only in `search(memory_types=[...])`
+(see SDK-008). Verified by introspecting 0.4.1.
+
+Aim the decision at the right call site: it is the `search` call that has to choose between
+`agent_case` and `agent_skill`, and the `search` call that loses `raw_message`.
 
 ---
 
@@ -506,6 +535,18 @@ except EverOSAPIError as e:
    failures surface as the underlying `urllib3`/generated-client exceptions, not as an
    `EverOSError`. FLAG any `except APIConnectionError` / `except APITimeoutError`.
 3. `except EverOSError` keeps working (it is still the base class) — leave those alone.
+4. **`EverOSAPIError` only covers errors the gateway returned.** 1.x validates the request
+   body with pydantic *before* anything is sent, and those failures raise
+   `pydantic_core.ValidationError`, which derives from `ValueError` and is **not** an
+   `EverOSError` subclass. 0.4.x sent the same input to the server and surfaced it as a
+   `BadRequestError`, so a caller that caught the SDK's exception and turned it into its own
+   4xx now lets the exception escape instead. Where the caller passes user-supplied input
+   straight into a call, widen the catch:
+
+   ```python
+   except (EverOSAPIError, ValueError) as e:
+       ...
+   ```
 
 ---
 
@@ -524,7 +565,9 @@ The `everos_cloud.types.v1` module does not exist in 1.x. Generated pydantic mod
 under `everos_cloud.models.*` and the facade returns the `*Data` payload types.
 
 ### Steps:
-1. REMOVE `from everos_cloud.types.v1 import ...` lines.
+1. REMOVE `from everos_cloud.types.v1 import ...` lines. This module does not exist in 1.x,
+   so a leftover import raises `ImportError` at import time and takes the whole module with
+   it, not just the annotated function. Same rule as SDK-004 step 0.
 2. If the names were only used as type annotations, the simplest correct migration is to
    drop the annotations or use the model names from `everos_cloud.models`; do not guess
    at names — check the installed package.
@@ -543,10 +586,15 @@ explanation and the wording to use.
 |---|---|
 | `client.v1.memories.group.add(...)` | *(none)* |
 | `client.v1.memories.group.flush(...)` | *(none)* |
-| `client.v1.groups.create(...)` / `.retrieve(...)` / `.update(...)` | *(none)* |
-| `client.v1.senders.create(...)` / `.retrieve(...)` / `.update(...)` | *(none)* — partial: per-message `sender_name` |
+| `client.v1.groups.create(...)` / `.retrieve(...)` / `.patch(...)` | *(none)* |
+| `client.v1.senders.create(...)` / `.retrieve(...)` / `.patch(...)` | *(none)* — partial: per-message `sender_name` |
 | `client.v1.settings.retrieve()` / `.update(...)` | *(none)* |
 | `filters={"group_id": ...}` anywhere | *(none)* |
+
+> **Method names matter here.** On 0.4.x, `groups` and `senders` expose
+> `create` / `retrieve` / **`patch`** — neither has an `update`. Only `settings` has
+> `.update(`. A search pattern built around `groups.update` or `senders.update` matches
+> nothing and the call sites are silently missed. Verified by introspecting 0.4.1.
 
 ### Steps:
 1. FLAG each call site with the reason and the options (see http API-012 step 1).
@@ -574,6 +622,88 @@ Do NOT auto-add these. Mention in the summary only.
 
 ---
 
+## SDK-016: Task polling
+
+### Change Type: BREAKING - Half of it silent
+
+Implements http API-018. Applies to any caller that passes `async_mode=True` and then follows
+the task. **This is the defect most likely to survive the migration and break at runtime**,
+because SDK-011 ("drop one `.data` level") rewrites it into valid Python that raises.
+
+**Before (0.4.x):**
+```python
+response = client.v1.memories.add(
+    user_id=u, session_id=s, messages=msgs, async_mode=True,
+)
+task = client.v1.tasks.retrieve(response.data.task_id)
+if task.data.status in ("completed", "failed", "error"):
+    ...
+```
+
+**After (1.x):**
+```python
+from everos_cloud.models.add_input import AddInput
+from everos_cloud.models.message_item import MessageItem
+from everos_cloud.models.content import Content
+
+# The facade returns .data, which has no task id. An async caller that follows its
+# task needs the envelope, so it goes through the generated client.
+envelope = client.memory.add_memory(AddInput(
+    app_id="default", project_id="default",
+    session_id=s, async_mode=True,
+    messages=[
+        MessageItem(
+            sender_id=u, role=m["role"], timestamp=m["timestamp"],
+            content=Content(m["content"]),     # not coerced for you here — see below
+        )
+        for m in msgs
+    ],
+))
+
+task = client.task_get(envelope.request_id)
+if task.status in ("success", "failed"):
+    ...
+
+# or let the SDK do the loop:
+task = client.task_wait(envelope.request_id, timeout=180, interval=3)
+```
+
+### Field Mapping:
+
+| 0.4.x | 1.x | Notes |
+|---|---|---|
+| `response.data.task_id` | `envelope.request_id` | **The add response carries no task id.** `AddData` has only `message_count` and `status`. |
+| `client.v1.tasks.retrieve(id)` | `client.task_get(id)` | Returns an unwrapped `TaskItem`: `id`, `status`, `task_type`, `created_at`, `finished_at`, `error` |
+| *(hand-rolled poll loop)* | `client.task_wait(id, ...)` | `timeout` / `interval` / `max_interval` / `raise_on_failure`, with backoff |
+| `status == "completed"` | `status == "success"` | **Silent failure if missed** — see below |
+
+### Two traps
+
+**1. `client.add()` cannot be used for this at all.** The facade returns the response `.data`
+and discards the envelope, so `request_id` is unreachable through it. An async caller that
+polls must use `client.memory.add_memory(...)`. SDK-011 says the facade drops the envelope;
+this is the case where that actually costs you something.
+
+**2. The terminal status set changed, and a stale check fails silently.** v2 statuses are
+`queued`, `pending`, `processing`, `success`, `failed`. Only `success` and `failed` are
+terminal. A leftover `in ("completed", "failed", "error")` is never true for a successful
+task, so the poll spins to its own timeout with nothing raised and nothing logged.
+
+### Note on the low-level client
+
+The facade's `add()` coerces a plain string into `Content` for you (`_to_message` does it).
+The generated client does **not**: `MessageItem.content` is typed `Content`, so passing a bare
+`str` makes pydantic reject the call before it reaches the network. Build `MessageItem` and
+`Content` explicitly, as above.
+
+### Search Patterns:
+- `.task_id` anywhere near an add call
+- `tasks.retrieve(`
+- the literal `"completed"` in a status comparison
+- `async_mode=True` — every one of these call sites deserves a look
+
+---
+
 ## Quick Reference: search-and-replace checklist
 
 Mechanical (safe to apply directly):
@@ -594,6 +724,8 @@ Requires restructuring (not find-and-replace):
 - `filters={...}` -> `user_id=` / `agent_id=` (SDK-008, SDK-009)
 - granular exceptions -> `EverOSAPIError` + `.status` (SDK-012)
 - `everos_cloud.types.v1` imports (SDK-013)
+- async task polling: `response.data.task_id` -> `envelope.request_id`, and `"completed"` -> `"success"` (SDK-016)
+- the module-level import of any removed symbol, which must be moved or deleted even when the call itself is only flagged (SDK-004, SDK-013)
 
 Flag only, never rewrite:
 - `EVER_OS_BASE_URL` set but not passed to `host=` — **silently hits production** (SDK-002)
