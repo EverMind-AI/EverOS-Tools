@@ -183,8 +183,8 @@ def add_async_and_wait(client: EverOS):
     task = client.task_wait(task_id, timeout=180, interval=3)
 
     # v2 statuses: queued | pending | processing | success | failed.
-    # Only success and failed are terminal. "completed" is a v1 value and is never
-    # returned, so a stale check against it silently polls until it times out.
+    # Only success and failed are terminal. v1 had processing | success | failed, so a
+    # loop that stopped on "anything but processing" now returns early on "queued".
     if task.status == "success":
         print(f"task {task.id} finished ({task.task_type})")
     return task

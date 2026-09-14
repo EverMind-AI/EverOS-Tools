@@ -596,9 +596,14 @@ except EverOSAPIError as e:
    The status mapping: 400 `BadRequestError`, 401 `AuthenticationError`,
    403 `PermissionDeniedError`, 404 `NotFoundError`, 409 `ConflictError`,
    422 `UnprocessableEntityError`, 429 `RateLimitError`, 5xx `InternalServerError`.
-2. `APIConnectionError` / `APITimeoutError` have **no 1.x equivalent** — transport
-   failures surface as the underlying `urllib3`/generated-client exceptions, not as an
-   `EverOSError`. FLAG any `except APIConnectionError` / `except APITimeoutError`.
+2. `APIConnectionError` / `APITimeoutError` have **no 1.x equivalent**. Transport failures
+   surface as `urllib3` exceptions, which are not `EverOSError`s: a refused connection raises
+   `urllib3.exceptions.MaxRetryError`, a timeout `urllib3.exceptions.ReadTimeoutError`, and
+   both derive from `urllib3.exceptions.HTTPError` (verified on 1.1.0 against a closed port).
+   **Do not delete the handler.** Rewrite it to `except urllib3.exceptions.HTTPError` (import
+   `urllib3`; it is already a dependency of 1.x) and flag it, so the caller keeps the
+   behaviour it had. Deleting the clause turns a swallowed outage into an uncaught exception,
+   and that is a behaviour change the report must name.
 3. `except EverOSError` keeps working (it is still the base class) — leave those alone.
 4. **A low-level `client.memory.*` / `client.storage.*` call raises `ApiException`, not
    `EverOSAPIError`.** Only the facade's `_call` wrapper performs that translation, and
@@ -771,8 +776,8 @@ written against the SDK types is already comparing against `"success"`. The stri
 `"completed"` does not appear anywhere in the 0.4.1 wheel. v2 adds `queued` and `pending`
 as further non-terminal states; the terminal pair is unchanged.
 
-> A **raw HTTP** caller that hard-coded `"completed"` against an older API generation is a
-> separate case — see API-018. Do not go hunting for `"completed"` in SDK code.
+> No API generation ever returned `"completed"`; the v1 contract enumerates
+> `processing | success | failed`. Do not go hunting for it in SDK code or anywhere else.
 
 What to check instead: that the non-terminal set covers `queued`, `pending` **and**
 `processing`, and that only `success` and `failed` stop the loop. A check that treats
@@ -788,7 +793,7 @@ The generated client does **not**: `MessageItem.content` is typed `Content`, so 
 ### Search Patterns:
 - `.task_id` anywhere near an add call
 - `tasks.retrieve(`
-- the literal `"completed"` in a status comparison
+- a loop that stops on anything other than `"processing"` (it now stops on `"queued"`)
 - `async_mode=True` — every one of these call sites deserves a look
 
 ---

@@ -27,8 +27,12 @@ Migrate an EverOS Cloud integration between API/SDK versions.
 # 3. See what a migration would involve, without changing anything
 /everos-sdk-upgrade --scan
 
-# 4. Run it
+# 4. Run it. Anything with no v2 equivalent stops the run with a question first.
 /everos-sdk-upgrade
+
+# 4b. You have read the report and want it to proceed with those call sites flagged
+#     (also the form for CI, where nobody can answer the question)
+/everos-sdk-upgrade --yes
 
 # 5. Update to the latest rules
 /plugin marketplace update
@@ -51,13 +55,17 @@ The CLI auto-detects your installed tools and copies the skill to the correct di
   Python version against the target's floor, whether your EverOS calls are on an async
   path, how many capabilities have no v2 equivalent, and whether your working tree already
   has uncommitted work in the files it is about to touch. Any of those can stop the run.
-- **It takes a snapshot first**, and recommends a branch, so the whole migration is one
-  reviewable diff and one command to undo.
+- **It takes a snapshot first** (`git stash create`, which leaves your working tree exactly
+  as it is), then works on its own branch, so the whole migration is one reviewable diff.
+  The report ends with the exact `git restore` command that undoes it, file by file.
+- **It stops to ask before flagging anything it cannot migrate.** Answer the question, or
+  pass `--yes` to proceed with those call sites flagged in place. Without `--yes`, a run
+  where nobody can answer produces the report and edits nothing.
 - **It never reports success it has not verified.** The report leads with how many call
   sites will still raise at runtime. A flagged call site is still a call site.
-- **It does not read your secrets.** It needs to know which files reference credential
-  variables, never their values, and it will not quote a line that looks like a key from
-  any file.
+- **It never prints your secrets.** It needs to know which files reference credential
+  variables, never their values. It does not open `.env` files, and it will not quote a
+  line that looks like a key from any file it does read.
 - **It flags rather than guesses.** Anything with no equivalent in the target version is
   marked in place with a comment explaining the options. It is never silently deleted,
   rewritten, or approximated.

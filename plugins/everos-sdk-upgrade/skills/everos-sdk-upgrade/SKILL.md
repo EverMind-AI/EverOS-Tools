@@ -8,8 +8,8 @@ description: >
   calls api.evermind.ai or an /api/v1/ path, the user mentions upgrading or
   migrating EverOS, or a dependency file pins an outdated SDK.
 user-invocable: true
-argument-hint: "[--scan] [target-version, default: latest]"
-allowed-tools: Read Grep Glob Edit Write Bash(git rev-parse *) Bash(git status *) Bash(git check-ignore *) Bash(git stash push *) Bash(git stash list *) Bash(git checkout -b *) Bash(git diff *) Bash(python -m py_compile *) Bash(pytest --collect-only *) Bash(python -m pytest --collect-only *) Bash(npx tsc *) Bash(npm run build *) Bash(go build *) Bash(go vet *) Bash(bash -n *) Bash(jq *)
+argument-hint: "[--scan] [--yes] [target-version, default: latest]"
+allowed-tools: Read Grep Glob Edit Write Bash(grep *) Bash(find *) Bash(ls *) Bash(wc *) Bash(head *) Bash(git log *) Bash(git branch *) Bash(git rev-parse *) Bash(git status *) Bash(git check-ignore *) Bash(git stash create) Bash(git stash create *) Bash(git stash store *) Bash(git stash list *) Bash(git branch --show-current) Bash(git checkout -b *) Bash(git diff *) Bash(python -m py_compile *) Bash(python3 -m py_compile *) Bash(python -m pip show *) Bash(python3 -m pip show *) Bash(uv pip show *) Bash(pytest --collect-only *) Bash(python -m pytest --collect-only *) Bash(python3 -m pytest --collect-only *) Bash(npx tsc *) Bash(npm run build *) Bash(go version) Bash(go build *) Bash(go vet *) Bash(bash -n *) Bash(jq *)
 ---
 
 # EverOS Migration
@@ -30,8 +30,25 @@ Read this before Step 0. It sets the standard every later step is held to.
   target version cannot run at all, it stops and says so instead of producing a plausible
   diff.
 - **It is reversible.** Nothing is edited until there is a way back.
-- **It does not read secrets.** It needs to know which files reference credential
-  variables, never their values.
+- **It never prints a secret.** It needs to know which files reference credential
+  variables, never their values, and it does not open `.env` files at all.
+
+## Tool discipline
+
+The `allowed-tools` list above is what runs without a permission prompt. Every prompt is a
+customer staring at a dialog wondering whether to trust this tool, so:
+
+- **Search with the `Grep` tool, list with `Glob`, read with `Read`.** When a step says
+  `Grep pattern="..."`, that is the Grep *tool*, not a shell `grep -r`. Read-only shell
+  commands (`grep`, `find`, `ls`, `wc`, `head`, `git log`, `git branch`) are on the list as a
+  fallback, but `cat`, `sed`, `pwd`, `echo`, `pip`, `python -c` and anything else are not,
+  and each one prompts.
+- **Bash runs one command per call, exactly as written in the step.** No `&&`, `;`, pipes,
+  redirects or `echo` banners in front. `echo "---" && git status --porcelain` is not
+  `git status --porcelain` to the permission system, and it prompts.
+- Use the interpreter name the step gives (`python` and `python3` are both listed). Do not
+  substitute `pip`, `python -c`, `git log` or anything else that is not in the list.
+- The only Bash commands this skill needs are the ones spelled out in Steps 0, 6 and 7.
 
 ## Modes
 
@@ -39,6 +56,10 @@ Read this before Step 0. It sets the standard every later step is held to.
   Steps 0 through 5, produce the Impact Report, **edit nothing**. Step 0 only checks; it
   takes no snapshot, because nothing will change.
 - **default**: run every step. Step 5 still runs first and its output gates Step 6.
+- **`--yes`**: the user has already read an Impact Report for this tree and is telling you
+  to proceed. Where Step 3c would otherwise stop to ask, proceed with every blocker flagged.
+  It does not override a STOP from 3a, 3b or 3d, and it does not skip the snapshot. This is
+  the flag for CI and for a second, non-interactive run.
 
 Recommend `--scan` when the user is deciding *whether* to migrate.
 
@@ -59,28 +80,52 @@ alone:
 
 | Observation | Meaning | Action |
 |---|---|---|
-| `rev-parse` fails | Not a git repository | **No automatic way back.** Say so plainly. Ask the user to confirm they have a backup, or to run `git init && git add -A && git commit -m baseline` first. Do not proceed silently. |
+| `rev-parse` fails | Not a git repository | **No automatic way back, and this skill does not make one.** Say so plainly and stop: ask the user to run `git init && git add -A && git commit -m baseline` (or take their own copy) and run the skill again. `--scan` is fine without git, because it edits nothing. |
 | toplevel is an **ancestor** of the working directory | The project is nested inside an unrelated repository | Run `git check-ignore -q .`. If the directory is ignored, git is not tracking this code at all. Treat exactly as "not a git repository" above. |
-| toplevel is the working directory, tree clean | Safe | Recommend `git checkout -b everos-v2-migration` so the migration is one reviewable diff. |
+| toplevel is the working directory, tree clean | Safe | Proceed. |
 | toplevel is the working directory, tree dirty | Uncommitted work present | See below. |
 
 `git status --porcelain` printing nothing is **not** proof of a clean tree. It prints
 nothing for a non-repository too, because `fatal: not a git repository` goes to stderr.
 This is why `rev-parse` runs first.
 
-**Dirty tree.** Do not decide here. Record the modified paths and carry them to Step 3,
+**Dirty tree.** Do not decide here. Record the modified paths and carry them to Step 3d,
 which is the first point at which the set of files this migration will touch is known.
 Overlap between the two sets is the only thing that matters, and it is not knowable yet.
 
-**Before the first edit in Step 6**, and only in migrate mode, take a snapshot:
+**Do not create a branch yet.** A branch created before the pre-flight gate is a side effect
+left behind by a run that stopped. Step 6 creates it right before the first edit.
+
+### The snapshot (migrate mode only, immediately before the first edit in Step 6)
 
 ```
-Bash: git stash push --include-untracked --keep-index -m everos-pre-migration
+Bash: git stash create everos-pre-migration
 ```
 
-If that is refused or the tree is not a repository, copy the tree to
-`../<project>-everos-backup-<date>` and name that path in the report. Never begin editing
-without one of the two.
+`git stash create` writes a commit that captures the working tree and index **without
+touching either of them**. The customer's uncommitted edits and untracked files stay exactly
+where they are; nothing disappears during the run. It prints a commit id, or nothing at all
+when the tree is clean.
+
+- If it printed an id, keep it:
+  ```
+  Bash: git stash store -m everos-pre-migration <id>
+  ```
+  The snapshot is that id (also visible as `stash@{0}`).
+- If it printed nothing, the tree matches `HEAD` and the snapshot is `HEAD`.
+
+Then, and only then, create the working branch so the migration is one reviewable diff:
+
+```
+Bash: git checkout -b everos-v2-migration
+```
+
+If the branch already exists, add a date suffix. Never begin editing without a snapshot id or
+`HEAD` recorded for the report.
+
+**Why not `git stash push`.** It removes the customer's uncommitted work from the working tree
+for the duration of the run, does nothing on a clean tree, and `git stash pop` afterwards
+re-applies *their* changes without reverting *yours*. It was never a way back.
 
 ---
 
@@ -94,9 +139,17 @@ Grep pattern="evermemos|everos_cloud|everos-cloud" glob="*.{py,toml,txt,in,cfg,l
 Grep pattern="evermemos|everos[-_]cloud" glob="{Pipfile,Dockerfile*,*.dockerfile,Makefile}"
 ```
 
+Every content-mode Grep in this skill carries the source glob below. It keeps `.env*`,
+`*.tfvars` and other extension-less or secret-bearing files out of content mode; those are
+covered by D, files-only.
+
+```
+SRC = "*.{py,ts,tsx,js,mjs,go,rs,java,kt,php,rb,sh,bash,json,yaml,yml,toml,http,rest,md,txt,cfg,ini,ipynb}"
+```
+
 **B. Raw HTTP, literal paths**
 ```
-Grep pattern="api\.evermind\.ai|/api/v[12]/" output_mode="content"
+Grep pattern="api\.evermind\.ai|/api/v[12]/" output_mode="content" glob=SRC
 ```
 Not `/api/v1/memories`. The removed endpoints (`/api/v1/groups`, `/api/v1/senders`,
 `/api/v1/settings`) are three of the five blocker categories, and a pattern anchored on
@@ -106,8 +159,8 @@ Not `/api/v1/memories`. The removed endpoints (`/api/v1/groups`, `/api/v1/sender
 literal. It builds one from a constant, so B finds nothing on an idiomatic TypeScript or
 Go caller.
 ```
-Grep pattern="\"/(memories|memory)(/(add|get|search|flush|delete|agent|group))?\"" output_mode="content"
-Grep pattern="apiVersion|API_VERSION|API_ROOT|EVEROS_BASE|memoryBase" output_mode="content"
+Grep pattern="\"/(memories|memory)(/(add|get|search|flush|delete|agent|group))?\"" output_mode="content" glob=SRC
+Grep pattern="apiVersion|API_VERSION|API_ROOT|EVEROS_BASE|memoryBase" output_mode="content" glob=SRC
 ```
 
 **D. Credential variables — files only, never content**
@@ -115,7 +168,7 @@ Grep pattern="apiVersion|API_VERSION|API_ROOT|EVEROS_BASE|memoryBase" output_mod
 Grep pattern="EVEROS_API_KEY|EVER_OS_BASE_URL|EVER_OS_CUSTOM_HEADERS" output_mode="files_with_matches"
 ```
 These files usually hold the live key on a neighbouring line. You need the paths, never the
-values. See the secret rules below.
+values. Do not `Read` a `.env*` file for any reason. See the secret rules below.
 
 **E. One hop out.** For every module A matched, find its importers:
 ```
@@ -140,7 +193,7 @@ subsets of the earlier ones.
 | # | Evidence | Verdict |
 |---|---|---|
 | 1 | `evermemos` package **and** `client.v0.` call sites | **v0** (`evermemos`) |
-| 2 | `everos-cloud` pinned `>=1`, **and** zero `/api/v1/` outside flagged call sites, **and** zero `filters={"user_id"` | **v2 — already current** |
+| 2 | `everos-cloud` pinned `>=1`, **and** zero unflagged `client.v1.` call sites, **and** zero `/api/v1/` outside flagged call sites, **and** zero `filters={"user_id"` | **v2 — already current** |
 | 3 | `everos-cloud` pinned `<1` or `>=0.4,<1`, or `client.v1.` call sites not carrying a migration flag | **v1** (0.4.x) |
 | 4 | Raw HTTP hitting `/api/v1/` | **v1** |
 | 5 | Raw HTTP hitting only `/api/v2/` | **v2 — already current** |
@@ -152,8 +205,11 @@ Two traps this ordering exists to avoid:
   be clean as well as the pin.
 - **A correctly migrated repo must not read as v1.** This skill *requires* leaving
   `client.v1.` calls in place for every removed capability, so their presence is evidence
-  of a completed migration, not of an unstarted one. A `client.v1.` call site with an
-  `EVEROS-MIGRATION:` comment within the three lines above it does not count for row 3.
+  of a completed migration, not of an unstarted one. A `client.v1.` call site whose
+  `EVEROS-MIGRATION:` comment sits directly above it (Step 6 places the comment so that its
+  last line is the line before the statement, inside the same function) does not count for
+  row 3. A customer who bumped the dependency first and then saw `AttributeError: v1` is
+  the most common reason this skill gets run at all; row 2 must never call that tree current.
 
 If the evidence is mixed, report the split and treat each dependency-manifest subtree as
 its own migration unit (see Step 5).
@@ -193,14 +249,22 @@ no syntax check catches it.
 Grep pattern="AsyncEverOS|await client\.|await self\._c\.|asyncio"
 ```
 
-`everos-cloud` 1.x ships **no async client**. If the EverOS calls are on an async path:
+`everos-cloud` 1.x ships **no async client**. Count the EverOS call sites that are awaited or
+go through `AsyncEverOS`, and compare with the total from Step 5.
 
-> **STOP.** `N` async EverOS call sites. 1.x is synchronous only, so the request path
-> cannot be migrated automatically. Options: run the sync client in a thread
-> (`asyncio.to_thread`), call `/api/v2/memory/*` with your own async HTTP client, or keep
-> this path on 0.4.x. Run with `--scan` to see the full picture first.
+- **Every EverOS call site is async:** there is nothing this skill can migrate.
 
-Do not rewrite an async call into a blocking one. It would block the event loop.
+  > **STOP.** `N` async EverOS call sites and no synchronous ones. 1.x is synchronous only,
+  > so the request path cannot be migrated automatically. Options: run the sync client in a
+  > thread (`asyncio.to_thread`), call `/api/v2/memory/*` with your own async HTTP client,
+  > or keep this path on 0.4.x.
+
+- **Some are async, the rest are sync:** this is a blocker, not a stop. Count it in 3c, flag
+  the async sites in Step 6 exactly as SDK-004 says, and migrate the synchronous ones. One
+  async helper must not hold forty synchronous call sites hostage.
+
+A bare `asyncio` import proves nothing on its own; look at the EverOS call sites. Never
+rewrite an async call into a blocking one. It would block the event loop.
 
 ### 3c. Blocker inventory
 
@@ -221,7 +285,14 @@ decision per call site. Count it under NEEDS A DECISION, not BLOCKERS.
 
 **If any blocker count is non-zero**, say so before editing and let the user choose between
 proceeding (blockers flagged, everything else migrated) and stopping. Do not decide for
-them.
+them. With `--yes`, the user has already chosen: proceed with the blockers flagged and say
+so in the report. Without `--yes` in a run where nobody can answer, produce the Impact
+Report and stop; nothing is edited.
+
+The last row is different in kind. `max_retries=`, `http_client=` and `default_headers=` are
+**deleted** in Step 6 (SDK-003: leaving them in is a `TypeError`), so they never count toward
+the STATUS line. They are inventoried here because the behaviour they provided is lost and
+the customer needs to know.
 
 ### 3d. Dirty-tree overlap
 
@@ -277,7 +348,8 @@ For each unit, locate and count:
 1. Endpoint paths and assembled path constants
 2. Client construction sites
 3. Call sites per rule id
-4. Response field access
+4. Response field access (`.data` levels, `raw_messages`, `agent_memory`, `task_id`,
+   `request_id`, `total_count`)
 5. Type definitions and imports (in a typed language this is the **largest** item)
 6. Exception and error handling
 7. **Test doubles, fakes, fixtures, VCR cassettes and Postman collections** that mimic the
@@ -286,13 +358,24 @@ For each unit, locate and count:
 8. Timestamp sources feeding a `timestamp` field
 9. Message construction sites reached from Step 1E, where `sender_id` is set or omitted
 
-Record every one as `file:line`. In `--scan` mode, stop here and produce the report.
+Record every one as `file:line`.
+
+**Counting rules.** One count per call site, across every file type: source, scripts,
+`.http` files, Postman collections, recorded fixtures and docs all count, and a Postman
+request is a call site. Postman collections, VCR cassettes and JSON fixtures count under
+item 7. A response-field access such as `raw_messages` or `agent_memory` counts under item 4
+and is a rename or a split, never a decision; only a `memory_types=[... "agent_memory"]`
+**request** value needs a decision. The Impact Report prints these numbers verbatim, in both
+modes, and Step 8 does not recount them.
+
+In `--scan` mode, stop here and produce the report.
 
 ---
 
 ## Step 6: Apply the changes
 
-Only for units the user has agreed to migrate. Take the Step 0 snapshot first.
+Only for units the user has agreed to migrate, or with `--yes`. Take the Step 0 snapshot,
+then create the branch, in that order, before the first edit.
 
 **Order matters.** Apply in this sequence:
 
@@ -324,8 +407,11 @@ uses. Do not ask the user to expand it first; there is nothing to expand it into
 ### 7a. Which version is installed?
 
 ```
-Bash: python -c "import importlib.metadata as m; print(m.version('everos-cloud'))"
+Bash: python -m pip show everos-cloud
 ```
+
+(`python3 -m pip show everos-cloud`, or `uv pip show everos-cloud` in a uv project.) Read the
+`Version:` line.
 
 Step 6 does not install anything, so this is usually still the **old** version. If it is
 `<1`, then:
@@ -342,9 +428,9 @@ Optionally offer the user a scratch environment:
 
 | Language | Check |
 |---|---|
-| Python | `python -m py_compile <files>`; then, only if 1.x is installed, `python -c "import a, b, c"` (batch them into one command) and `pytest --collect-only` |
+| Python | `python -m py_compile <files>`; then, only if 1.x is installed, `pytest --collect-only -q`, which imports every test module and through them the code. If there are no tests, tell the user which modules to import by hand |
 | TypeScript | `npx tsc --noEmit`, then the project's build script |
-| Go | `go build ./... && go vet ./...` |
+| Go | `go version` first; if there is no toolchain, defer and say so. Otherwise `go build ./...`, then `go vet ./...` (two calls) |
 | Shell | `bash -n` on every script |
 | JSON / Postman | `jq -e . <file>` on every fixture and collection |
 
@@ -372,8 +458,9 @@ None of the above catches these. Check them by reading:
 Grep pattern="client\.v1\.|/api/v1/" output_mode="count"
 ```
 
-Subtract the call sites you deliberately flagged. Anything left is code that will raise at
-runtime. **This number is the first line of the report.**
+Subtract the call sites you deliberately flagged (an `EVEROS-MIGRATION:` comment directly
+above the statement). Anything left is code that will raise at runtime. **This number is
+the first line of the report.**
 
 ---
 
@@ -383,12 +470,18 @@ Produce the Impact Report below in both modes. In migrate mode, follow it with: 
 modified, changes per category, every flag comment inserted, the snapshot location, and:
 
 ```
-Review:  git diff
-Undo:    git stash pop          (restores the pre-migration snapshot)
+Snapshot: <id from git stash create, or HEAD>
+Review:   git diff <snapshot> --stat
+Undo:     git restore --source=<snapshot> -- <every file this run edited, listed>
+          rm <every file this run created, listed>
+          git checkout <original branch> && git branch -D everos-v2-migration
 ```
 
-Never print `git checkout -- .`. It discards the customer's uncommitted work in files this
-skill never touched, and leaves untracked files behind: destructive and incomplete at once.
+List the files explicitly; the customer should be able to paste the block as-is. Never print
+`git checkout -- .`, `git reset --hard`, `git stash pop` or `git checkout main` as the undo.
+The first two discard the customer's uncommitted work in files this skill never touched, the
+third re-applies their work without reverting yours, and the fourth does nothing at all when
+the migration branch has no commits.
 
 ---
 
@@ -412,6 +505,11 @@ skill never touched, and leaves untracked files behind: destructive and incomple
   - *Shell*: put a flag comment on its own line above the command. A trailing comment
     swallows the rest of the line, and a comment after a `\` continuation silently splits
     one command into two. `bash -n` accepts both.
+- **Flag placement is part of the flag.** Put the `EVEROS-MIGRATION:` comment so that its
+  last line is directly above the statement it flags, inside the same function. Nothing in
+  between: not a blank line, not a `client = make_client()`. Step 2 and Step 7d recognise a
+  flag by that adjacency, and a re-run on your own output must not count flagged sites as
+  unmigrated.
 - **A version constant is a trap, not a find-and-replace target.** Where the version lives
   in a constant feeding several path roots, do not bump it: split it, and pin the removed
   endpoints to an explicitly-named legacy constant so they fail as a visible blocker rather
@@ -461,7 +559,7 @@ PRE-FLIGHT
   Python target      <3.11 / 3.12+ / n-a>     [STOP if below 3.12]
   Async call sites   <N>                       [STOP if non-zero]
   Working tree       <clean / dirty, overlapping: ...>
-  Snapshot           <git stash ref or backup path>
+  Snapshot           <commit id from git stash create, or HEAD>   [scan: none]
 
 BLOCKERS (no equivalent in v2) — all seven reported, including zeros
   <N> group memory              <file:line ...>
@@ -470,7 +568,7 @@ BLOCKERS (no equivalent in v2) — all seven reported, including zeros
   <N> async (AsyncEverOS)       <file:line ...>
   <N> delete by memory_id       <file:line ...>
   <N> raw_message in search     <file:line ...>
-  <N> max_retries / http_client / default_headers   <file:line ...>
+  <N> max_retries / http_client / default_headers   <file:line ...>   (deleted in Step 6, not in STATUS)
   -> Non-zero means this migration cannot be completed by the tool alone.
      senders and settings: answerable by email. group memory: a product question.
 

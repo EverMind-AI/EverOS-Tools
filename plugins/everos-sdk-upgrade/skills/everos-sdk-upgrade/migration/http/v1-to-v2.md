@@ -561,7 +561,7 @@ Same flag name, different downstream result. **Verified live on prod (2026-09-04
 
 | | v1 `async_mode: false` | v2 `async_mode: false` |
 |---|---|---|
-| `add` returns | `status: "accumulated"` | `status: "extracted"` |
+| `add` returns | `status: "accumulated"` | `status: "extracted"`, or `"accumulated"` when the batch did not close a session (both are the synchronous outcome in the `AddData` enum) |
 | following `flush` returns | `status: "extracted"` | `status: "no_extraction"` |
 
 The v2 sync path already ran extraction, so the subsequent `flush` correctly reports
@@ -767,41 +767,40 @@ The task endpoint echoes it back as `data.id`, so the envelope's `request_id` an
 This one fails loudly: reading `task_id` off the add result raises `AttributeError` (Python) or
 yields `undefined` (JS) on the first async write.
 
-### (b) The status vocabulary changed, and this half fails silently
+### (b) Two new non-terminal states, and unknown values
 
-| v1 | v2 |
-|---|---|
-| `completed` | `success` |
-| *(n/a)* | `queued`, `pending`, `processing` are all non-terminal |
-| `failed` | `failed` |
+The v1 contract (`TaskStatusResult.status` in the v1 OpenAPI document, and the 0.4.1 SDK
+types) enumerates exactly `processing`, `success`, `failed`. v2 keeps all three and adds two
+more non-terminal states:
 
-The full v2 set, as reported by `GET /api/v2/tasks/stats`, is
-`queued`, `pending`, `processing`, `success`, `failed`. A progression of
-`queued -> processing -> success` was observed live (2026-09-14).
+| | v1 | v2 |
+|---|---|---|
+| non-terminal | `processing` | `queued`, `pending`, `processing` |
+| terminal | `success`, `failed` | `success`, `failed` |
 
-A leftover terminal check like:
+The terminal pair did not change. What breaks is a poll loop that treats anything other than
+`processing` as finished:
 
 ```python
-if status in ("completed", "failed", "error"):   # never true on v2
+if status != "processing":        # v1: means done. v2: fires on "queued" before the task ran
+    return status
 ```
 
-turns a finished task into an apparently-unfinished one, and the poll spins until its own
-timeout. Nothing raises, and nothing logs.
-
-> Treat only `success` and `failed` as terminal. A check that stops on `processing` or
-> `pending` is the mirror-image bug: it reports a task done before it is.
+That reports a task complete before it has started, and nothing raises. The v2 contract also
+says to treat the set as open: a value you do not recognise is terminal only when
+`finished_at` is set.
 
 ### Steps:
 1. FIND every read of a task id off an add response. The id now comes from the envelope's
    `request_id`, not from `data`.
-2. FIND every status comparison against `"completed"` and change it to `"success"`.
-3. Make sure the non-terminal set is `queued` / `pending` / `processing`, and that the loop
-   keeps polling on all three.
+2. FIND every status check and make it stop **only** on `success` or `failed`, or on an
+   unknown value with `finished_at` set. Keep polling on `queued`, `pending`, `processing`.
+3. Do not go looking for `"completed"`. Neither API generation ever returned it.
 
 ### Search Patterns:
 - `task_id` anywhere near an add call
 - `tasks.retrieve(`, `/tasks/` in a URL
-- the literal `"completed"` in a status comparison
+- `!= "processing"` or `== "processing"` as the only loop condition
 
 ---
 
