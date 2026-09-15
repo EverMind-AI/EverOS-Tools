@@ -579,8 +579,16 @@ BLOCKERS (no equivalent in v2) — all seven reported, including zeros
   <N> delete by memory_id       <file:line ...>
   <N> raw_message in search     <file:line ...>
   <N> max_retries / http_client / default_headers   <file:line ...>   (deleted in Step 6, not in STATUS)
-  -> Non-zero means this migration cannot be completed by the tool alone.
-     senders and settings: answerable by email. group memory: a product question.
+  -> Non-zero means this migration cannot be completed by the tool alone. Every flagged
+     function still imports and raises the moment it is called. Who resolves each:
+       group memory, delete by memory_id   a product decision: v2 has no equivalent yet.
+                                           Ask EverOS before choosing a workaround.
+       async, sender registry              engineering on your side; the options are in
+                                           SDK-004 and API-013.
+       memory-space settings               ask EverOS whether your v1 settings still apply
+                                           to v2 processing. It changes extraction output.
+       constructor options                 removed in Step 6; 1.x has no retry layer, so
+                                           add your own if you relied on max_retries.
 
 NEEDS A DECISION
   <N> agent_memory in search   (agent_case vs agent_skill, per call site)
