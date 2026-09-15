@@ -48,6 +48,11 @@ npx skills add https://github.com/EverMind-AI/everos-tools
 
 The CLI auto-detects your installed tools and copies the skill to the correct directories.
 
+Verified end to end on Claude Code and on Codex CLI (`codex exec`, read-only sandbox, `--scan`
+report identical in structure). Other tools follow the same standard but have not been run
+against a fixture yet; the tool names in `SKILL.md` (`Grep`, `Glob`, `Read`) are Claude Code's,
+and Codex mapped them to `rg` and `sed` on its own.
+
 ## What it does to your repository
 
 - **`--scan` writes nothing.** It reads your code and prints a report. Use it first.
