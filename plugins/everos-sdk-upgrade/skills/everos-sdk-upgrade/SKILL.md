@@ -557,8 +557,10 @@ You need to know **which files** reference credential variables, never their val
 Lead with what does not work. The customer's first question is "can I even do this", not
 "what changed". Three rules for the text around the block:
 
-- **Write the explanations in the language the user spoke to you in.** Keep the section
-  headers (`STATUS`, `BLOCKERS`, ...) in English so EverOS can read any report the same way.
+- **The report is in English, all of it.** Headers, values and explanations alike, whatever
+  language the user spoke to you in; it is a document the customer forwards to EverOS, and a
+  half-translated one reads worse than either language. Answer the user's question in their
+  own language *around* the block, never inside it.
 - **Print only what applies.** The seven blocker rows always appear, zeros included, but the
   "who resolves it" lines below them appear only for categories with a non-zero count. A
   clean project gets a short report.
