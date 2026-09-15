@@ -48,6 +48,11 @@ customer staring at a dialog wondering whether to trust this tool, so:
   `git status --porcelain` to the permission system, and it prompts.
 - Use the interpreter name the step gives (`python` and `python3` are both listed). Do not
   substitute `pip`, `python -c`, `git log` or anything else that is not in the list.
+- Run git from the project directory as written. `git -C <path> stash create` is not
+  `git stash create` to the permission system, and it prompts.
+- The rule files live outside the customer's project. Find them with the `Glob` tool as
+  Step 4 says; a shell `find` on the plugin directory prompts because the path is outside
+  the working directory.
 - The only Bash commands this skill needs are the ones spelled out in Steps 0, 6 and 7.
 
 ## Modes
