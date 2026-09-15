@@ -555,11 +555,24 @@ You need to know **which files** reference credential variables, never their val
 ## Impact Report
 
 Lead with what does not work. The customer's first question is "can I even do this", not
-"what changed".
+"what changed". Three rules for the text around the block:
+
+- **Write the explanations in the language the user spoke to you in.** Keep the section
+  headers (`STATUS`, `BLOCKERS`, ...) in English so EverOS can read any report the same way.
+- **Print only what applies.** The seven blocker rows always appear, zeros included, but the
+  "who resolves it" lines below them appear only for categories with a non-zero count. A
+  clean project gets a short report.
+- **Say up front how long a migration takes** (several minutes, no progress output) before
+  Step 6 starts, so nobody assumes it hung.
 
 ```
 EverOS migration impact: <current> -> <target>
 Unit: <path>            (one section per migration unit)
+
+VERDICT
+  Can this tree migrate?      <yes / yes, with N call sites left on v1 / no: stopped at <gate>>
+  The tool does               <N> mechanical rewrites across <N> files
+  You decide                  <N> blocker categories, <N> open decisions (listed below)
 
 STATUS
   <N> call sites will still raise at runtime after this migration.
@@ -579,8 +592,8 @@ BLOCKERS (no equivalent in v2) — all seven reported, including zeros
   <N> delete by memory_id       <file:line ...>
   <N> raw_message in search     <file:line ...>
   <N> max_retries / http_client / default_headers   <file:line ...>   (deleted in Step 6, not in STATUS)
-  -> Non-zero means this migration cannot be completed by the tool alone. Every flagged
-     function still imports and raises the moment it is called. Who resolves each:
+  -> [only when a count above is non-zero] These functions still import and raise the
+     moment they are called. Who resolves each, for the non-zero categories only:
        group memory, delete by memory_id   a product decision: v2 has no equivalent yet.
                                            Ask EverOS before choosing a workaround.
        async, sender registry              engineering on your side; the options are in
