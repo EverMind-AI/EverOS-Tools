@@ -1,4 +1,4 @@
-# everos-tools
+# EverOS Tools
 
 Official EverOS developer tools for AI coding assistants.
 
