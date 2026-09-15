@@ -198,7 +198,7 @@ subsets of the earlier ones.
 | # | Evidence | Verdict |
 |---|---|---|
 | 1 | `evermemos` package **and** `client.v0.` call sites | **v0** (`evermemos`) |
-| 2 | `everos-cloud` pinned `>=1`, **and** zero unflagged `client.v1.` call sites, **and** zero `/api/v1/` outside flagged call sites, **and** zero `filters={"user_id"` | **v2 — already current** |
+| 2 | `everos-cloud` pinned `>=1`, **and** zero unflagged `client.v1.` call sites, **and** zero `/api/v1/` in code outside flagged call sites (comments and docstrings do not count), **and** zero `filters={"user_id"` | **v2 — already current** |
 | 3 | `everos-cloud` pinned `<1` or `>=0.4,<1`, or `client.v1.` call sites not carrying a migration flag | **v1** (0.4.x) |
 | 4 | Raw HTTP hitting `/api/v1/` | **v1** |
 | 5 | Raw HTTP hitting only `/api/v2/` | **v2 — already current** |
@@ -460,12 +460,14 @@ None of the above catches these. Check them by reading:
 ### 7d. Count what still does not work
 
 ```
-Grep pattern="client\.v1\.|/api/v1/" output_mode="count"
+Grep pattern="client\.v1\.|/api/v1/" output_mode="content"
 ```
 
-Subtract the call sites you deliberately flagged (an `EVEROS-MIGRATION:` comment directly
-above the statement). Anything left is code that will raise at runtime. **This number is
-the first line of the report.**
+Count **code only**. A match inside a comment, docstring or Markdown file is not a call
+site; your own flag comments and rule citations name the old endpoints, and they must not
+count against the tree they explain. Then subtract the call sites you deliberately flagged
+(an `EVEROS-MIGRATION:` comment directly above the statement). Anything left is code that
+will raise at runtime. **This number is the first line of the report.**
 
 ---
 
@@ -510,6 +512,9 @@ the migration branch has no commits.
   - *Shell*: put a flag comment on its own line above the command. A trailing comment
     swallows the rest of the line, and a comment after a `\` continuation silently splits
     one command into two. `bash -n` accepts both.
+- **In comments you write, name an old endpoint without its `/api/` prefix**: `v1
+  /memories/agent`, not `/api/v1/memories/agent`. Step 2 and Step 7d grep for `/api/v1/`,
+  and a re-run must not mistake your explanation for a leftover call.
 - **Flag placement is part of the flag.** Put the `EVEROS-MIGRATION:` comment so that its
   last line is directly above the statement it flags, inside the same function. Nothing in
   between: not a blank line, not a `client = make_client()`. Step 2 and Step 7d recognise a
@@ -594,6 +599,8 @@ BEFORE YOU SHIP
   - Existing v1 memories do NOT carry over. The v2 store starts empty until EverOS
     migrates your data. Agree the cutover before you switch production traffic.
   - Your API key does not change, and v1 keeps working until it is retired.
+  - This tool did not run your test suite, and a passing py_compile is not a passing test.
+    Run the suite yourself, against a non-production key, before you switch traffic.
   - Verification deferred: <which checks could not run, and why>
 
 This report contains counts and file locations only — no source, no secrets. It is safe to
