@@ -1,7 +1,7 @@
 {
-  "name": "everos-plugins",
+  "name": "everos-tools",
   "metadata": {
-    "description": "Official EverOS SDK tools: migration, upgrade, and development skills"
+    "description": "Official EverOS developer tools: API and SDK migration, upgrade, and development skills"
   },
   "owner": {
     "name": "EverMind AI"
@@ -10,7 +10,7 @@
     {
       "name": "everos-sdk-upgrade",
       "source": "./plugins/everos-sdk-upgrade",
-      "description": "Auto-migrate EverOS SDK between versions (Python only; Go/TS planned)."
+      "description": "Migrate EverOS Cloud callers between API/SDK versions — Python SDK and raw HTTP in any language."
     }
   ]
 }

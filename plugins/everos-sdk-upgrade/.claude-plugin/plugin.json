@@ -1,12 +1,12 @@
 {
   "name": "everos-sdk-upgrade",
-  "version": "1.0.0",
-  "description": "Auto-migrate EverOS SDK between versions (Python only; Go/TS planned)",
+  "version": "1.1.0",
+  "description": "Migrate EverOS Cloud callers between API/SDK versions — Python SDK and raw HTTP in any language. Includes a scan-only impact report.",
   "author": {
     "name": "EverMind AI"
   },
   "license": "Apache-2.0",
-  "repository": "https://github.com/EverMind-AI/everos-plugins",
+  "repository": "https://github.com/EverMind-AI/everos-tools",
   "homepage": "https://docs.evermind.ai/api-reference/introduction",
-  "keywords": ["everos", "evermemos", "sdk", "migration", "upgrade"]
+  "keywords": ["everos", "evermemos", "sdk", "api", "migration", "upgrade"]
 }
