@@ -15,44 +15,85 @@ Migrate an EverOS Cloud integration between API/SDK versions.
   silently dropping or approximating them
 - `--scan` mode produces an impact report without editing anything
 
-## Installation (Claude Code)
+## Install and run
+
+The tool needs a git repository: it refuses to edit a tree it cannot restore. Start with
+`--scan` in every case; it reads your code and prints a report without changing anything.
+
+### Claude Code
+
+Inside a Claude Code session:
 
 ```bash
-# 1. Add marketplace (one-time)
-/plugin marketplace add EverMind-AI/everos-tools
-
-# 2. Install the plugin
+/plugin marketplace add EverMind-AI/everos-tools      # one-time
 /plugin install everos-sdk-upgrade@everos-tools
 
-# 3. See what a migration would involve, without changing anything
-/everos-sdk-upgrade --scan
+/everos-sdk-upgrade --scan     # report only, nothing edited
+/everos-sdk-upgrade            # migrate; stops to ask if anything has no v2 equivalent
+/everos-sdk-upgrade --yes      # migrate and proceed with those call sites flagged (CI, or a second run)
 
-# 4. Run it. Anything with no v2 equivalent stops the run with a question first.
-/everos-sdk-upgrade
-
-# 4b. You have read the report and want it to proceed with those call sites flagged
-#     (also the form for CI, where nobody can answer the question)
-/everos-sdk-upgrade --yes
-
-# 5. Update to the latest rules
-/plugin marketplace update
+/plugin marketplace update     # pick up new rules later
 ```
 
-## Other AI Tools (Cursor, GitHub Copilot, Codex, Gemini CLI, Cline, Amp, Warp, Goose, Junie, and 45+ supported)
+The same two install steps from a terminal, if you prefer:
 
-This skill follows the [Agent Skills](https://agentskills.io) open standard. Install with one command:
+```bash
+claude plugin marketplace add EverMind-AI/everos-tools
+claude plugin install everos-sdk-upgrade@everos-tools
+```
+
+### Codex, Cursor, and other tools that follow the Agent Skills standard
+
+This skill follows the [Agent Skills](https://agentskills.io) open standard. From your
+project directory:
 
 ```bash
 npx skills add https://github.com/EverMind-AI/everos-tools
 ```
 
-The CLI auto-detects your installed tools and copies the skill to the correct directories.
+This places the skill at `.agents/skills/everos-sdk-upgrade/` and writes `skills-lock.json`;
+Codex and Cursor read that directory directly, and a symlink is added for any other detected
+tool. Commit both, or add them to `.gitignore`, as you prefer.
 
-Verified on Claude Code (scan and migrate), and in `--scan` mode on Codex CLI (`codex exec`,
-read-only sandbox) and Cursor (`cursor-agent -p`): same report structure, same blocker
-locations, nothing edited, `.env` never opened. Other tools follow the same standard but have
-not been run against a fixture; the tool names in `SKILL.md` (`Grep`, `Glob`, `Read`) are
-Claude Code's, and both Codex and Cursor mapped them to their own tools without help.
+Then ask your assistant, in its own chat:
+
+```text
+Run the everos-sdk-upgrade skill in --scan mode on this repository.
+```
+
+and later, to migrate, the same sentence without `--scan` (add "proceed with every blocker
+flagged" for the `--yes` behaviour).
+
+### What has been verified where
+
+| Tool | Install | `--scan` | Full migration |
+|---|---|---|---|
+| Claude Code | marketplace and `npx skills add` | verified | verified, including a live run of the migrated code against production |
+| Codex CLI | `npx skills add` | verified (`codex exec`, read-only sandbox) | not run |
+| Cursor | `npx skills add` | verified (`cursor-agent -p`) | not run |
+| Other Agent Skills tools | `npx skills add` | same standard, not run against a fixture | not run |
+
+The tool names in `SKILL.md` (`Grep`, `Glob`, `Read`) are Claude Code's; Codex and Cursor
+mapped them to their own tools without help.
+
+## What the report looks like
+
+The first lines of a real `--scan` on a small v1 script:
+
+```text
+VERDICT
+  Can this tree migrate?      yes, with 1 call site left on v1
+  The tool does               2 mechanical rewrites across 2 files
+  You decide                  0 blocker categories, 1 open decision
+
+STATUS
+  1 call site will still raise at runtime after this migration.
+      -> flush() has no session_id in scope at the call site; it stays flagged
+```
+
+followed by PRE-FLIGHT, the seven BLOCKERS rows (with who resolves each), NEEDS A DECISION,
+MECHANICAL and BEFORE YOU SHIP, every item with a file and line. The report contains no
+source and no secrets, so it can be sent to EverOS as it is.
 
 ## What it does to your repository
 
