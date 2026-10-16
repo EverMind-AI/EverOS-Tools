@@ -238,10 +238,11 @@ func (c *Client) DeleteUser(userID string) (int, error) {
 // user_id / agent_id / session_id. The nearest option is a session-scoped delete, which
 // is coarser. Cannot be migrated automatically.
 //
-// EVEROS-MIGRATION (API-012): group memory has no v2 equivalent. Multi-party
-// conversations still work — write every participant into one session_id and each
-// episode carries them all in SenderIDs — but a group is no longer addressable, so
-// reads fan out per participant. Contact EverOS before changing this.
+// EVEROS-MIGRATION (API-012): v2 has no group endpoint. By default this group's data
+// migrates to project_id = group_id (no group_id, or a gen_* id: "default"). v2 reads
+// need that project_id plus a user_id or agent_id, so a whole-group read becomes one read
+// per participant. Choose your v2 mapping, or contact EverOS before Nov 2, 2026 to map
+// the data differently.
 //
 // The v1 types below are re-declared locally rather than left pointing at the renamed
 // v2 types: a dangling type reference is a compile error that takes down packages which
