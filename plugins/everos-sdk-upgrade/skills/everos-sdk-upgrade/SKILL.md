@@ -596,7 +596,11 @@ BLOCKERS (no equivalent in v2) — all seven reported, including zeros
   <N> max_retries / http_client / default_headers   <file:line ...>   (deleted in Step 6, not in STATUS)
   -> [only when a count above is non-zero] These functions still import and raise the
      moment they are called. Who resolves each, for the non-zero categories only:
-       group memory, delete by memory_id   a product decision: v2 has no equivalent yet.
+       group memory                        your mapping choice: v2 has no group endpoint.
+                                           By default each group's data migrates to
+                                           project_id = group_id (none or gen_*: "default").
+                                           Ask EverOS before Nov 2, 2026 to map it otherwise.
+       delete by memory_id                 a product decision: v2 has no equivalent yet.
                                            Ask EverOS before choosing a workaround.
        async, sender registry              engineering on your side; the options are in
                                            SDK-004 and API-013.

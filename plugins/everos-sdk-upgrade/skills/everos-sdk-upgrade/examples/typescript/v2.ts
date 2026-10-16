@@ -153,10 +153,11 @@ export async function deleteUser(userId: string) {
 // user_id / agent_id / session_id. The nearest option is a session-scoped delete, which
 // is coarser. This cannot be migrated automatically.
 //
-// EVEROS-MIGRATION (API-012): group memory has no v2 equivalent. Multi-party
-// conversations still work — write all participants into one session_id and every
-// episode carries all of them in sender_ids — but a group is no longer an addressable
-// object, so reads fan out per participant. Contact EverOS before changing this.
+// EVEROS-MIGRATION (API-012): v2 has no group endpoint. By default this group's data
+// migrates to project_id = group_id (no group_id, or a gen_* id: "default"). v2 reads
+// need that project_id plus a user_id or agent_id, so a whole-group read becomes one read
+// per participant. Choose your v2 mapping, or contact EverOS before Nov 2, 2026 to map
+// the data differently.
 //
 // The v1 types these still need are re-declared locally rather than left dangling,
 // because a dangling type reference is a compile error that takes down consumers which

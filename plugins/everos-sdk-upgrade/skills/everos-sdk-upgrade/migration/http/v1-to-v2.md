@@ -52,7 +52,7 @@ Read this first. Every table below reads like a call-site diff; for a typed clie
 - API-009: `delete` — status code, body, and scope semantics
 - API-010: Error response body shape
 - API-011: Extraction timing — sync `add` now extracts, `flush` returns `no_extraction`
-- API-012: REMOVED — group memory (no v2 equivalent) — **FLAG, do not rewrite**
+- API-012: REMOVED — group memory endpoints (data maps to `project_id`) — **FLAG, do not rewrite**
 - API-013: REMOVED — sender registry (no v2 equivalent) — **FLAG, do not rewrite**
 - API-014: REMOVED — memory-space settings (no v2 equivalent) — **FLAG, do not rewrite**
 - API-015: Agent memory folded into the unified `add`
@@ -580,13 +580,13 @@ messages have not landed yet. Use `async_mode: false` for deterministic tests.
 
 ---
 
-## API-012: REMOVED — group memory (no v2 equivalent)
+## API-012: REMOVED — group memory endpoints (data maps to `project_id`)
 
-### Change Type: BREAKING - Removed, NO REPLACEMENT
+### Change Type: BREAKING - Removed, mapping is the caller's choice
 
 **Do NOT rewrite these calls. FLAG them in place with a comment and stop.**
 
-Removed with nothing to migrate to:
+Removed endpoints and parameters:
 - `POST /api/v1/memories/group` — add multi-party group memory
 - `POST /api/v1/memories/group/flush`
 - `POST /api/v1/groups` — create group
@@ -594,24 +594,32 @@ Removed with nothing to migrate to:
 - `filters.group_id` on `get` / `search`
 - `group_id` on `delete`
 
-The v2 schema contains **no group concept whatsoever** (zero occurrences of `group` in
-the v2 OpenAPI contract). v2 scopes memory by `user_id` or `agent_id` only.
+v2 has no group endpoints and no group concept, but group data can still be mapped onto
+the v2 schema in several ways (by `project_id`, by `session_id`, by participant). The right
+mapping depends on how the product uses groups, so it is the caller's decision, not this
+tool's. EverOS is happy to help work it out: contact@evermind.ai.
 
-v1 group memory produces a genuinely different artifact — an episode attributed to
-multiple participants:
-```json
-{"group_id": "grp-1", "participants": ["bob", "alice"],
- "summary": "Alice suggested shipping a release on Friday. Bob replied that Friday works..."}
-```
-There is no way to produce that in v2 today.
+**Default data migration**, applied unless the caller agrees a different plan with
+EverOS before the v1 data migration (Nov 2, 2026):
+- Each group's memories migrate to the v2 project with the same id:
+  `group_id: "team-alpha"` → `app_id: "default"`, `project_id: "team-alpha"`.
+- Memories with no `group_id`, or with a server-assigned id starting with `gen_`,
+  migrate to `project_id: "default"`.
+- v2 memory has a single owner. A group memory with several participants migrates as one
+  copy per participant, each owned by that participant.
+
+To read migrated data, a v2 call must pass the same `app_id` / `project_id` pair
+(API-005). v2 `get` and `search` also require exactly one of `user_id` / `agent_id`, so a
+v1 query that read a whole group by `group_id` alone has no single-call equivalent: it
+becomes one query per participant.
 
 ### Steps:
 1. FLAG every call site with a comment, e.g.:
    ```
-   # EVEROS-MIGRATION: group memory has no v2 equivalent. This call cannot be migrated.
-   # Options: (a) stay on v1 for this path, (b) model each participant as a separate
-   # sender_id in one session and accept the loss of group-level aggregation.
-   # Contact EverOS before choosing.
+   # EVEROS-MIGRATION: v2 has no group endpoint. By default this group's data migrates
+   # to project_id="<group_id>" (no group_id, or a gen_* id: "default"). v2 reads need
+   # that project_id plus a user_id or agent_id. Choose your v2 mapping, or contact
+   # EverOS (contact@evermind.ai) before Nov 2, 2026 for a different data mapping.
    ```
 2. Do NOT delete the code and do NOT invent a replacement.
 
@@ -623,8 +631,8 @@ There is no way to produce that in v2 today.
    | Shell | A comment **on its own line above** the command. A trailing comment swallows the rest of the line, and a comment placed after a `\` continuation silently splits one command into two. `bash -n` accepts both corruptions. |
    | JSON, Postman collections | No comment syntax exists. Put the reason in a `description` or metadata field, and **move the item into a separate file CI does not run**. Postman has no per-request disable, and `postman.setNextRequest(null)` does not prevent the request firing. |
    | VCR cassettes, recorded fixtures | Same: reason in a metadata field, move out of the executed set. |
-3. Report the count of flagged group call sites prominently in the final summary — this
-   is the finding that determines whether the migration can complete at all.
+3. Report the count of flagged group call sites prominently in the final summary, with
+   the default mapping above, so the caller can decide before the data migration runs.
 
 ---
 

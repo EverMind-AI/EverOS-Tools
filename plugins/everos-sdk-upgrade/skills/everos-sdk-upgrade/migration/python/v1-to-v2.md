@@ -683,10 +683,13 @@ explanation and the wording to use.
 > nothing and the call sites are silently missed. Verified by introspecting 0.4.1.
 
 ### Steps:
-1. FLAG each call site with the reason and the options (see http API-012 step 1).
+1. FLAG each call site with the reason and the options (see http API-012 step 1 for
+   groups, API-013 / API-014 for senders and settings).
 2. **Count them and surface the count at the top of the final report.** If this count is
-   greater than zero, the migration cannot be completed by this tool and the user needs
-   to talk to EverOS before proceeding.
+   greater than zero, the migration cannot be completed by this tool. For groups, state
+   the default data mapping from http API-012 (`group_id` → `project_id`; no group id or
+   `gen_*` → `"default"`): the caller chooses a v2 mapping, and contacts EverOS before
+   Nov 2, 2026 only if the data should migrate differently.
 
 ---
 

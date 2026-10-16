@@ -1,6 +1,6 @@
 {
   "name": "everos-sdk-upgrade",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Migrate EverOS Cloud callers between API/SDK versions — Python SDK and raw HTTP in any language. Includes a scan-only impact report.",
   "author": {
     "name": "EverMind AI"
